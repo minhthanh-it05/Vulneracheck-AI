@@ -1,0 +1,43 @@
+name: Security Gate (EdgeSAST-Pipeline)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  sast-scan:
+    name: Run EdgeSAST Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run EdgeSAST scan
+        run: |
+          python src/cli.py scan --path . --threshold 0.85 --output edgesast-report.sarif.json
+
+      - name: Upload SARIF report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: edgesast-report.sarif.json
+
+      - name: Archive SARIF artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edgesast-sarif-report
+          path: edgesast-report.sarif.json

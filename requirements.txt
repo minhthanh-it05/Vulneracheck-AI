@@ -1,0 +1,7 @@
+onnxruntime>=1.17.0
+tree-sitter>=0.21.0
+transformers>=4.38.0
+sarif-om>=1.0.4
+jschema-to-python>=1.2.3
+click>=8.1.7
+colorama>=0.4.6

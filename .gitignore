@@ -1,0 +1,42 @@
+# --- Python ---
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# --- Model / Native artifacts ---
+*.onnx
+*.so
+*.dll
+*.dylib
+*.pt
+*.bin
+
+# --- Logs ---
+*.log
+logs/
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- SARIF / scan outputs ---
+*.sarif
+output/
+reports/
+
+# --- Env / secrets ---
+.env
+.env.*
