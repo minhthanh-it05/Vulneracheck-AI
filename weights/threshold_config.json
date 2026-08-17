@@ -1,0 +1,24 @@
+{
+  "model_dir": "/content/graphcodebert-vuln-final-v7",
+  "target_recall": 0.92,
+  "max_review_pct": 0.25,
+  "thresholds": {
+    "java": 0.05,
+    "c": 0.6,
+    "cpp": 0.1
+  },
+  "uncertain_zones": {
+    "java": [
+      0.011,
+      0.089
+    ],
+    "c": [
+      0.52,
+      0.68
+    ],
+    "cpp": [
+      0.02,
+      0.18
+    ]
+  }
+}

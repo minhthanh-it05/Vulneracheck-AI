@@ -10,11 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-RULES_DIR = Path(__file__).resolve().parent.parent.parent / "rules"
+RULES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "rules"
 
 LANGUAGE_RULE_MAP = {
-    ".py": "python_sinks.scm",
-    ".java": "java_sinks.scm",
+    ".py": "python/python_sinks.scm",
+    ".java": "java/java_sinks.scm",
 }
 
 

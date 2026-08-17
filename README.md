@@ -1,8 +1,8 @@
-# EdgeSAST-Pipeline
+# VulneraCheck-AI
 
-**Hybrid SAST Engine** — kết hợp Tree-sitter AST parsing, rule-based sink detection,
-và AI inference on-device (ONNX Runtime) để phát hiện lỗ hổng bảo mật trong mã nguồn
-mà không cần gọi ra cloud (edge-first, offline-capable).
+**Hybrid SAST Engine** — cascade 3 lớp: regex/pattern matching phát hiện hardcoded
+secret, Tree-sitter AST parsing lọc high-recall candidate sink, và GraphCodeBERT
+(ONNX Runtime) xác minh nhị phân an toàn/có lỗi — chạy on-device, không cần gọi cloud.
 
 ## Kiến trúc
 
@@ -21,21 +21,29 @@ Xem sơ đồ chi tiết tại [assets/](assets/).
 ## Cấu trúc dự án
 
 ```
-EdgeSAST-Pipeline/
-├── assets/                  # Sơ đồ kiến trúc, hình ảnh
-├── weights/                 # Model ONNX + tokenizer (không commit, xem weights/README.md)
-├── rules/                   # Tree-sitter S-expression queries theo ngôn ngữ
+VulneraCheck-AI/
+├── assets/                        # Sơ đồ kiến trúc, hình ảnh
+├── weights/                       # Model ONNX + tokenizer + threshold_config.json (không commit binary)
+├── rules/                         # Tree-sitter S-expression queries, theo ngôn ngữ (c/, cpp/, java/, python/)
 ├── samples/
-│   ├── vulnerable/          # Mã mẫu có lỗi để kiểm thử phát hiện
-│   └── safe/                # Mã mẫu an toàn để kiểm thử báo động giả
-├── src/
-│   ├── secrets/             # Quét hardcoded secrets / API keys
-│   ├── parsers/             # Tree-sitter AST parser engine
-│   ├── verifier/            # AI inference (ONNX Runtime) để xác minh finding
-│   ├── reporting/            # Xuất báo cáo chuẩn SARIF 2.1.0
-│   └── cli.py                # Entrypoint CLI
+│   ├── vulnerable/                # Mã mẫu có lỗi, theo ngôn ngữ
+│   └── safe/                      # Mã mẫu an toàn, theo ngôn ngữ
+├── src/vulneracheck/
+│   ├── secrets/                   # Layer 1: quét hardcoded secrets / API keys
+│   ├── parsers/                   # Layer 2: Tree-sitter AST parser (high-recall)
+│   ├── verifier/                  # Layer 3: GraphCodeBERT (ONNX) binary classifier
+│   ├── reporting/                 # Xuất báo cáo chuẩn SARIF 2.1.0
+│   ├── pipeline.py                # Orchestrator: secrets -> parsers -> verifier -> reporting
+│   └── cli.py                     # Entrypoint CLI
+├── tests/
+│   ├── unit/                      # Test từng layer riêng lẻ
+│   └── integration/                # Test pipeline end-to-end
+├── docs/
+│   ├── architecture.md
+│   └── model_card.md
 ├── .github/workflows/
-│   └── security-gate.yml    # CI security gate
+│   └── security-gate.yml          # CI security gate
+├── pyproject.toml
 ├── requirements.txt
 └── LICENSE
 ```
@@ -45,7 +53,7 @@ EdgeSAST-Pipeline/
 ```bash
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
 Tải model ONNX theo hướng dẫn tại [weights/README.md](weights/README.md) trước khi chạy scan.
@@ -53,7 +61,9 @@ Tải model ONNX theo hướng dẫn tại [weights/README.md](weights/README.md
 ## Sử dụng
 
 ```bash
-python src/cli.py scan --path <target_path> --threshold 0.85
+vulneracheck scan --path <target_path> --threshold 0.85
+# hoặc, không cài đặt package:
+python -m vulneracheck.cli scan --path <target_path> --threshold 0.85
 ```
 
 ## License

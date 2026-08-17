@@ -14,12 +14,14 @@ build/
 .ruff_cache/
 
 # --- Model / Native artifacts ---
-*.onnx
 *.so
 *.dll
 *.dylib
 *.pt
 *.bin
+*.safetensors
+weights/*.bin
+weights/*.safetensors
 
 # --- Logs ---
 *.log

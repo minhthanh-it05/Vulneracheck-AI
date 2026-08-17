@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulneracheck"
+version = "0.1.0"
+description = "Hybrid SAST Engine — cascade 3-layer detector (regex secrets + Tree-sitter AST + GraphCodeBERT ONNX verifier) with SARIF reporting."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "onnxruntime>=1.17.0",
+    "tree-sitter>=0.21.0",
+    "transformers>=4.38.0",
+    "numpy>=1.24.0",
+    "sarif-om>=1.0.4",
+    "jschema-to-python>=1.2.3",
+    "click>=8.1.7",
+    "colorama>=0.4.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+vulneracheck = "vulneracheck.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
