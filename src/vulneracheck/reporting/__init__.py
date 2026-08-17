@@ -14,7 +14,7 @@ SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA = (
     "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 )
-TOOL_NAME = "EdgeSAST-Pipeline"
+TOOL_NAME = "VulneraCheck-AI"
 
 
 @dataclass
@@ -31,6 +31,7 @@ class Finding:
 @dataclass
 class SarifReport:
     findings: list[Finding] = field(default_factory=list)
+    run_properties: dict = field(default_factory=dict)
 
     def add(self, finding: Finding) -> None:
         self.findings.append(finding)
@@ -67,20 +68,22 @@ class SarifReport:
                 }
             )
 
+        run: dict = {
+            "tool": {
+                "driver": {
+                    "name": TOOL_NAME,
+                    "rules": list(rules.values()),
+                }
+            },
+            "results": results,
+        }
+        if self.run_properties:
+            run["properties"] = self.run_properties
+
         return {
             "$schema": SARIF_SCHEMA,
             "version": SARIF_VERSION,
-            "runs": [
-                {
-                    "tool": {
-                        "driver": {
-                            "name": TOOL_NAME,
-                            "rules": list(rules.values()),
-                        }
-                    },
-                    "results": results,
-                }
-            ],
+            "runs": [run],
         }
 
     def write(self, output_path: str | Path) -> None:

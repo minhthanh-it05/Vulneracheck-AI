@@ -1,8 +1,8 @@
 """
-cli.py: Entrypoint điều khiển lệnh CLI cho EdgeSAST-Pipeline.
+cli.py: Entrypoint điều khiển lệnh CLI cho VulneraCheck-AI.
 
 Usage:
-    python src/cli.py scan --path <target_path> --threshold 0.85
+    vulneracheck scan --path <target_path> --threshold 0.85
 """
 
 from __future__ import annotations
@@ -13,13 +13,21 @@ from pathlib import Path
 import click
 from colorama import Fore, Style, init as colorama_init
 
+from vulneracheck.pipeline import PipelineConfig, run_pipeline
+from vulneracheck.reporting import SarifReport
+
 colorama_init(autoreset=True)
+
+PARTIAL_PIPELINE_WARNING = (
+    "Pipeline chưa implement đầy đủ — đây KHÔNG phải kết quả quét bảo mật "
+    "thật, chỉ là placeholder."
+)
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="EdgeSAST-Pipeline")
+@click.version_option(version="0.1.0", prog_name="VulneraCheck-AI")
 def cli() -> None:
-    """EdgeSAST-Pipeline: Hybrid SAST Engine (Tree-sitter + ONNX Runtime AI verifier)."""
+    """VulneraCheck-AI: Hybrid SAST Engine (Tree-sitter + ONNX Runtime AI verifier)."""
 
 
 @cli.command()
@@ -47,19 +55,25 @@ def cli() -> None:
 )
 def scan(target_path: Path, threshold: float, output_path: Path) -> None:
     """Quét mã nguồn tại --path và xuất báo cáo SARIF."""
-    click.echo(f"{Fore.CYAN}[EdgeSAST] Đang quét: {target_path}{Style.RESET_ALL}")
-    click.echo(f"{Fore.CYAN}[EdgeSAST] Ngưỡng confidence: {threshold}{Style.RESET_ALL}")
+    click.echo(f"{Fore.CYAN}[VulneraCheck] Đang quét: {target_path}{Style.RESET_ALL}")
+    click.echo(f"{Fore.CYAN}[VulneraCheck] Ngưỡng confidence: {threshold}{Style.RESET_ALL}")
 
-    # TODO: 1. src.parsers.TreeSitterEngine -> tìm candidate sinks
-    # TODO: 2. src.secrets.scan_file -> tìm hardcoded secrets
-    # TODO: 3. src.verifier.ONNXVerifier -> lọc false positive theo threshold
-    # TODO: 4. src.reporting.SarifReport -> ghi kết quả ra output_path
+    config = PipelineConfig(target_path=target_path, threshold=threshold, output_path=output_path)
 
-    click.echo(
-        f"{Fore.YELLOW}[EdgeSAST] Pipeline scan chưa được triển khai đầy đủ "
-        f"(khung CLI khởi tạo).{Style.RESET_ALL}"
-    )
-    click.echo(f"{Fore.GREEN}[EdgeSAST] Báo cáo sẽ được ghi tại: {output_path}{Style.RESET_ALL}")
+    try:
+        result = run_pipeline(config)
+    except NotImplementedError:
+        click.echo(f"{Fore.YELLOW}[VulneraCheck] {PARTIAL_PIPELINE_WARNING}{Style.RESET_ALL}", err=True)
+        report = SarifReport(
+            run_properties={"status": "partial", "message": PARTIAL_PIPELINE_WARNING}
+        )
+        report.write(output_path)
+        click.echo(f"{Fore.GREEN}[VulneraCheck] Báo cáo placeholder đã ghi tại: {output_path}{Style.RESET_ALL}")
+        sys.exit(1)
+
+    if result.report is not None:
+        result.report.write(output_path)
+    click.echo(f"{Fore.GREEN}[VulneraCheck] Báo cáo đã ghi tại: {output_path}{Style.RESET_ALL}")
 
 
 if __name__ == "__main__":

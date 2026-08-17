@@ -36,6 +36,7 @@ logs/
 
 # --- SARIF / scan outputs ---
 *.sarif
+*.sarif.json
 output/
 reports/
 
