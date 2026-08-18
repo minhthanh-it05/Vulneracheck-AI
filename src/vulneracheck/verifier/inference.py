@@ -17,6 +17,18 @@ from vulneracheck.verifier.types import VerifierResult
 
 MAX_SEQUENCE_LENGTH = 512
 
+# Batch quá lớn trong 1 lần session.run() bị chậm SIÊU tuyến tính trên CPU:
+# padding là dynamic THEO ITEM DÀI NHẤT TRONG BATCH, nên batch càng lớn càng
+# dễ "dính" phải ít nhất 1 snippet dài (candidate sink giờ mang cả function
+# bao quanh, có thể dài hàng chục nghìn ký tự trước khi truncate) và kéo
+# TOÀN BỘ batch bị pad theo độ dài đó. Đã đo thực nghiệm trên repo thật
+# (moonlight-common-c, 229 candidate): N=10 ~5.4s, N=30 ~13.5s, N=60 ~26.6s
+# (~0.45s/candidate, tuyến tính) nhưng N=200+ không hoàn thành sau nhiều phút.
+# Chunk cố định theo MAX_BATCH_SIZE để chặn tensor phồng to bất thường,
+# đổi lại nhiều lần gọi session.run() hơn (vẫn là batch thật mỗi lần, không
+# phải loop predict() từng candidate).
+MAX_BATCH_SIZE = 32
+
 # Bí danh ngôn ngữ thường gặp -> tên chuẩn dùng trong threshold_config.json
 _LANGUAGE_ALIASES = {
     "c++": "cpp",
@@ -116,9 +128,13 @@ class ONNXVerifier:
         confidence = float(self._run_session(encodings)[0])
         return self._classify(language, confidence)
 
-    def predict_batch(self, items: list[tuple[str, str]]) -> list[VerifierResult]:
-        """Xác minh nhiều candidate sink cùng lúc bằng một lần chạy ONNX
-        session (dynamic padding theo batch, không pad cứng 512).
+    def predict_batch(
+        self, items: list[tuple[str, str]], batch_size: int = MAX_BATCH_SIZE
+    ) -> list[VerifierResult]:
+        """Xác minh nhiều candidate sink cùng lúc, chia thành các batch con
+        cố định kích thước `batch_size` (mỗi batch con vẫn là 1 lần gọi
+        session.run() thật — không loop predict() từng candidate). Xem
+        MAX_BATCH_SIZE để biết lý do cần chunk thay vì gộp tất cả vào 1 batch.
 
         items: danh sách (code, language).
         Trả về danh sách VerifierResult theo đúng thứ tự items đầu vào.
@@ -141,18 +157,20 @@ class ONNXVerifier:
                 supported_codes.append(code)
                 supported_languages.append(language)
 
-        if supported_codes:
+        for start in range(0, len(supported_codes), batch_size):
+            chunk_indices = supported_indices[start : start + batch_size]
+            chunk_codes = supported_codes[start : start + batch_size]
+            chunk_languages = supported_languages[start : start + batch_size]
+
             encodings = self._tokenizer(
-                supported_codes,
+                chunk_codes,
                 truncation=True,
                 max_length=MAX_SEQUENCE_LENGTH,
                 padding=True,
                 return_tensors="np",
             )
             confidences = self._run_session(encodings)
-            for i, language, confidence in zip(
-                supported_indices, supported_languages, confidences
-            ):
+            for i, language, confidence in zip(chunk_indices, chunk_languages, confidences):
                 results[i] = self._classify(language, float(confidence))
 
         return results  # type: ignore[return-value]
