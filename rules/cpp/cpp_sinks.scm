@@ -5,16 +5,36 @@
 ; Tách riêng khỏi rules/c/c_sinks.scm vì grammar C++ có thêm delete/delete[]
 ; (không tồn tại trong grammar C) và namespace-qualified call (vd. std::system)
 ; mà grammar C không có.
+;
+; Mỗi nhóm 1/2/3 có 2 pattern song song: gọi trực tiếp (vd. strcpy(...)) và
+; gọi qua namespace-qualified (vd. std::strcpy(...)) — code C++ hiện đại rất
+; hay gọi tường minh qua std::, cả 2 dạng đều phải được forward lên Layer 3.
 
-; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125)
+; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — gọi trực tiếp
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
   (#match? @sink.name "^(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)$"))
 
-; Memory-unsafe operations (CWE-119, CWE-416, CWE-476)
+; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — qua
+; namespace-qualified call (vd. std::strcpy(...))
+(call_expression
+  function: (qualified_identifier
+    name: (identifier) @sink.name)
+  arguments: (argument_list) @sink.args
+  (#match? @sink.name "^(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)$"))
+
+; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — gọi trực tiếp
 (call_expression
   function: (identifier) @sink.name
+  arguments: (argument_list) @sink.args
+  (#match? @sink.name "^(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)$"))
+
+; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — qua
+; namespace-qualified call (vd. std::memcpy(...))
+(call_expression
+  function: (qualified_identifier
+    name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
   (#match? @sink.name "^(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)$"))
 
@@ -25,10 +45,18 @@
 ; thay vì trích riêng toán hạng.
 (delete_expression "delete" @sink.name) @sink.args
 
-; Format string (CWE-134) — không phân biệt format string có phải literal
-; hay không ở Layer 2 (quá phức tạp cho query đơn giản), để Layer 3 xử lý.
+; Format string (CWE-134) — gọi trực tiếp. Không phân biệt format string có
+; phải literal hay không ở Layer 2 (quá phức tạp cho query đơn giản), để
+; Layer 3 xử lý.
 (call_expression
   function: (identifier) @sink.name
+  arguments: (argument_list) @sink.args
+  (#match? @sink.name "^(printf|fprintf|snprintf|syslog|vfprintf)$"))
+
+; Format string (CWE-134) — qua namespace-qualified call (vd. std::printf(...))
+(call_expression
+  function: (qualified_identifier
+    name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
   (#match? @sink.name "^(printf|fprintf|snprintf|syslog|vfprintf)$"))
 

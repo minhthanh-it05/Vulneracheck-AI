@@ -21,6 +21,9 @@ VULNERABLE_C = SAMPLES_ROOT / "vulnerable" / "c" / "buffer_overflow.c"
 SAFE_C = SAMPLES_ROOT / "safe" / "c" / "bounded_copy.c"
 VULNERABLE_CPP = SAMPLES_ROOT / "vulnerable" / "cpp" / "buffer_overflow.cpp"
 SAFE_CPP = SAMPLES_ROOT / "safe" / "cpp" / "bounded_copy.cpp"
+QUALIFIED_CALL_VULNERABLE_CPP = (
+    SAMPLES_ROOT / "vulnerable" / "cpp" / "qualified_call_vulnerable.cpp"
+)
 
 
 @pytest.fixture
@@ -38,6 +41,7 @@ def engine() -> TreeSitterEngine:
         SAFE_C,
         VULNERABLE_CPP,
         SAFE_CPP,
+        QUALIFIED_CALL_VULNERABLE_CPP,
     ]
 )
 def sample_path(request: pytest.FixtureRequest) -> Path:
@@ -77,6 +81,7 @@ def test_rule_wiring_loads_query(engine: TreeSitterEngine, extension: str) -> No
         (SAFE_C, {"strncpy", "printf"}),
         (VULNERABLE_CPP, {"strcpy", "system", "delete"}),
         (SAFE_CPP, {"strncpy"}),
+        (QUALIFIED_CALL_VULNERABLE_CPP, {"strcpy", "sprintf", "printf"}),
     ],
 )
 def test_parse_file_finds_expected_sinks(
@@ -132,6 +137,26 @@ def test_parse_file_snippet_is_full_enclosing_function(
     match = next(c for c in candidates if c.sink_name == sink_name)
     assert expected_signature in match.snippet
     assert match.snippet.count("\n") > 0
+
+
+def test_parse_file_detects_namespace_qualified_calls(engine: TreeSitterEngine) -> None:
+    # cpp_sinks.scm phải bắt được cả dạng gọi qualified (std::strcpy,
+    # std::sprintf, std::printf), không chỉ dạng gọi trực tiếp — code C++
+    # hiện đại rất hay gọi tường minh qua std::.
+    candidates = engine.parse_file(str(QUALIFIED_CALL_VULNERABLE_CPP))
+
+    found_names = {c.sink_name for c in candidates}
+    assert {"strcpy", "sprintf", "printf"}.issubset(found_names)
+
+    strcpy_candidates = [c for c in candidates if c.sink_name == "strcpy"]
+    assert strcpy_candidates
+    assert "CWE-120" in strcpy_candidates[0].cwe
+    assert strcpy_candidates[0].file_path == str(QUALIFIED_CALL_VULNERABLE_CPP)
+    assert strcpy_candidates[0].line > 0
+
+    sprintf_candidates = [c for c in candidates if c.sink_name == "sprintf"]
+    assert sprintf_candidates
+    assert "CWE-120" in sprintf_candidates[0].cwe
 
 
 def test_parse_file_falls_back_to_single_line_without_enclosing_function(
