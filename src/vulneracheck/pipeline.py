@@ -16,6 +16,7 @@ toàn bộ candidate gom được — xem run_pipeline):
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,9 +96,18 @@ def _get_parser_engine() -> TreeSitterEngine:
 
 @dataclass
 class PipelineConfig:
-    """Cấu hình chạy pipeline cho một lần scan."""
+    """Cấu hình chạy pipeline cho một lần scan.
 
-    target_path: Path
+    Đúng 1 trong 2 chế độ, không được cả 2 và không được thiếu cả 2 (kiểm
+    tra ở đầu run_pipeline):
+        - target_path: quét toàn bộ 1 file hoặc 1 thư mục (chế độ cũ).
+        - diff_range: chỉ quét file thay đổi giữa 2 ref git, vd.
+          "origin/main..HEAD" (chế độ mới, dùng repo_root làm nơi chạy git).
+    """
+
+    target_path: Path | None = None
+    diff_range: str | None = None
+    repo_root: Path = field(default_factory=Path.cwd)
     output_path: Path = Path("report.sarif.json")
 
 
@@ -340,6 +350,36 @@ def _should_scan_file(path: Path) -> bool:
     return True
 
 
+def _resolve_safe_path(file_path: Path, root_real: Path) -> Path | None:
+    """Trả về real path đã resolve nếu file_path là 1 file thường, nằm trong
+    root_real, và không phải symlink; trả về None (kèm cảnh báo stderr) nếu
+    bị loại. Dùng chung cho cả duyệt thư mục (_iter_scannable_files) và chế
+    độ --diff (get_changed_files) để áp dụng đúng 1 bộ điều kiện an toàn,
+    không viết lại logic ở 2 nơi.
+    """
+    try:
+        if file_path.is_symlink():
+            print(
+                f"[vulneracheck] Bỏ qua {file_path} (symlink, không theo để tránh "
+                "path traversal).",
+                file=sys.stderr,
+            )
+            return None
+        real_path = file_path.resolve()
+        if not real_path.is_relative_to(root_real):
+            print(
+                f"[vulneracheck] Bỏ qua {file_path} (resolve ra ngoài thư mục gốc "
+                f"{root_real}).",
+                file=sys.stderr,
+            )
+            return None
+        if not real_path.is_file():
+            return None
+    except OSError:
+        return None
+    return real_path
+
+
 def _iter_scannable_files(root: Path):
     """Duyệt cây thư mục an toàn:
         - bỏ qua .git/, node_modules/, __pycache__/, venv/.venv/, và mọi
@@ -357,28 +397,59 @@ def _iter_scannable_files(root: Path):
         ]
         for filename in filenames:
             file_path = Path(dirpath) / filename
-            try:
-                if file_path.is_symlink():
-                    print(
-                        f"[vulneracheck] Bỏ qua {file_path} (symlink, không theo để tránh "
-                        "path traversal).",
-                        file=sys.stderr,
-                    )
-                    continue
-                real_path = file_path.resolve()
-                if not real_path.is_relative_to(root_real):
-                    print(
-                        f"[vulneracheck] Bỏ qua {file_path} (resolve ra ngoài thư mục gốc "
-                        f"{root_real}).",
-                        file=sys.stderr,
-                    )
-                    continue
-                if not real_path.is_file():
-                    continue
-            except OSError:
-                continue
-            if _should_scan_file(real_path):
+            real_path = _resolve_safe_path(file_path, root_real)
+            if real_path is not None and _should_scan_file(real_path):
                 yield file_path
+
+
+def get_changed_files(diff_range: str, repo_root: Path) -> list[Path]:
+    """Lấy danh sách file thay đổi giữa 2 ref qua `git diff --name-only
+    <diff_range>`, chạy trong repo_root.
+
+    Áp dụng ĐÚNG các điều kiện an toàn như duyệt thư mục thường (kích thước,
+    binary, symlink, ngoài root) qua _resolve_safe_path/_should_scan_file —
+    tái sử dụng, không viết lại. File đã bị xoá trong diff (không còn tồn
+    tại ở head) tự động bị loại vì _resolve_safe_path kiểm tra is_file().
+
+    diff_range: dạng "<base_ref>..<head_ref>", vd. "origin/main..HEAD".
+
+    Raises:
+        RuntimeError nếu không tìm thấy lệnh `git`, repo_root không phải git
+        repo, hoặc ref trong diff_range không tồn tại (thông báo rõ nguyên
+        nhân thường gặp, vd. thiếu `git fetch` đủ sâu trong CI).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", diff_range],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Không tìm thấy lệnh `git` trong PATH — cần cài Git để dùng --diff."
+        ) from exc
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`git diff --name-only {diff_range}` thất bại tại {repo_root} "
+            f"(exit code {result.returncode}). Nguyên nhân thường gặp: "
+            f"{repo_root} không phải git repo, hoặc ref trong '{diff_range}' "
+            "không tồn tại (trong CI, cần `git fetch`/checkout đủ sâu — xem "
+            f"fetch-depth). Chi tiết từ git: {result.stderr.strip()}"
+        )
+
+    root_real = repo_root.resolve()
+    files: list[Path] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        file_path = repo_root / line
+        real_path = _resolve_safe_path(file_path, root_real)
+        if real_path is not None and _should_scan_file(real_path):
+            files.append(file_path)
+    return files
 
 
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
@@ -386,8 +457,13 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     Chạy toàn bộ cascade: secrets -> parsers -> verifier -> reporting.
 
     Input:
-        config: PipelineConfig (target_path, output_path). target_path có
-        thể là 1 file hoặc 1 thư mục (repo/PR diff checkout).
+        config: PipelineConfig — đúng 1 trong 2 chế độ:
+            - target_path: quét 1 file hoặc 1 thư mục (toàn bộ).
+            - diff_range: chỉ quét file thay đổi giữa 2 ref git (vd. cho
+              PR), lấy qua get_changed_files(config.diff_range,
+              config.repo_root).
+        Set cả 2 hoặc không cái nào đều raise ValueError — 2 chế độ độc lập,
+        loại trừ lẫn nhau.
     Output:
         PipelineResult chứa kết quả trung gian của từng layer và báo cáo cuối
         (đã được ghi ra config.output_path).
@@ -399,12 +475,22 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     và vẫn đúng yêu cầu "Layer 3 chỉ chạy cho CandidateSink, không chạy trên
     toàn bộ file".
     """
-    target_path = Path(config.target_path)
+    if config.target_path is not None and config.diff_range is not None:
+        raise ValueError(
+            "PipelineConfig chỉ được set 1 trong 2: target_path hoặc diff_range, "
+            "không được cả 2 (2 chế độ scan loại trừ lẫn nhau)."
+        )
+    if config.target_path is None and config.diff_range is None:
+        raise ValueError("PipelineConfig cần set target_path hoặc diff_range.")
 
-    if target_path.is_file():
-        files = [target_path] if _should_scan_file(target_path) else []
+    if config.diff_range is not None:
+        files = get_changed_files(config.diff_range, config.repo_root)
     else:
-        files = list(_iter_scannable_files(target_path))
+        target_path = Path(config.target_path)
+        if target_path.is_file():
+            files = [target_path] if _should_scan_file(target_path) else []
+        else:
+            files = list(_iter_scannable_files(target_path))
 
     result = PipelineResult()
     all_candidates: list[CandidateSink] = []

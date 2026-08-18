@@ -18,6 +18,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 = full history. Cần thiết cho --diff (git diff
+          # giữa PR base SHA và head SHA) — mặc định GitHub Actions chỉ
+          # checkout shallow clone (depth 1), không đủ để git diff tới base.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -32,7 +37,11 @@ jobs:
       - name: Run VulneraCheck scan
         continue-on-error: true
         run: |
-          vulneracheck scan --path . --threshold 0.85 --output vulneracheck-report.sarif.json
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            vulneracheck scan --diff "${{ github.event.pull_request.base.sha }}..${{ github.sha }}" --output vulneracheck-report.sarif.json
+          else
+            vulneracheck scan --path . --output vulneracheck-report.sarif.json
+          fi
           if [ -f vulneracheck-report.sarif.json ] && grep -q '"status": "partial"' vulneracheck-report.sarif.json; then
             echo "::warning::Pipeline chua implement day du - day KHONG phai ket qua quet bao mat that, chi la placeholder."
           fi

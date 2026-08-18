@@ -3,6 +3,7 @@ cli.py: Entrypoint điều khiển lệnh CLI cho VulneraCheck-AI.
 
 Usage:
     vulneracheck scan --path <target_path>
+    vulneracheck scan --diff <base_ref>..<head_ref>
 """
 
 from __future__ import annotations
@@ -34,9 +35,22 @@ def cli() -> None:
 @click.option(
     "--path",
     "target_path",
-    required=True,
+    required=False,
+    default=None,
     type=click.Path(exists=True, file_okay=True, dir_okay=True, path_type=Path),
-    help="Đường dẫn tới file hoặc thư mục mã nguồn cần scan.",
+    help="Đường dẫn tới file hoặc thư mục mã nguồn cần scan. Loại trừ với --diff.",
+)
+@click.option(
+    "--diff",
+    "diff_range",
+    required=False,
+    default=None,
+    type=str,
+    help=(
+        "Chỉ quét file thay đổi giữa 2 ref git, vd. 'origin/main..HEAD'. "
+        "Chạy `git diff --name-only` tại thư mục làm việc hiện tại (phải là "
+        "git repo). Loại trừ với --path."
+    ),
 )
 @click.option(
     "--output",
@@ -46,11 +60,19 @@ def cli() -> None:
     type=click.Path(path_type=Path),
     help="Đường dẫn file báo cáo SARIF 2.1.0 đầu ra.",
 )
-def scan(target_path: Path, output_path: Path) -> None:
-    """Quét mã nguồn tại --path và xuất báo cáo SARIF."""
-    click.echo(f"{Fore.CYAN}[VulneraCheck] Đang quét: {target_path}{Style.RESET_ALL}")
+def scan(target_path: Path | None, diff_range: str | None, output_path: Path) -> None:
+    """Quét mã nguồn (--path hoặc --diff) và xuất báo cáo SARIF."""
+    if target_path is not None and diff_range is not None:
+        raise click.UsageError("--path và --diff loại trừ nhau, chỉ dùng 1 trong 2.")
+    if target_path is None and diff_range is None:
+        raise click.UsageError("Cần cung cấp --path hoặc --diff.")
 
-    config = PipelineConfig(target_path=target_path, output_path=output_path)
+    if diff_range is not None:
+        click.echo(f"{Fore.CYAN}[VulneraCheck] Đang quét diff: {diff_range}{Style.RESET_ALL}")
+        config = PipelineConfig(diff_range=diff_range, repo_root=Path.cwd(), output_path=output_path)
+    else:
+        click.echo(f"{Fore.CYAN}[VulneraCheck] Đang quét: {target_path}{Style.RESET_ALL}")
+        config = PipelineConfig(target_path=target_path, output_path=output_path)
 
     try:
         result = run_pipeline(config)
@@ -64,6 +86,11 @@ def scan(target_path: Path, output_path: Path) -> None:
         report.write(output_path)
         click.echo(f"{Fore.GREEN}[VulneraCheck] Báo cáo placeholder đã ghi tại: {output_path}{Style.RESET_ALL}")
         sys.exit(1)
+    except RuntimeError as exc:
+        # Lỗi từ `git diff` (không phải git repo, ref không tồn tại...) —
+        # báo rõ nguyên nhân, không phải bug hệ thống.
+        click.echo(f"{Fore.RED}[VulneraCheck] {exc}{Style.RESET_ALL}", err=True)
+        sys.exit(2)
 
     finding_count = len(result.report.findings) if result.report is not None else 0
     click.echo(
