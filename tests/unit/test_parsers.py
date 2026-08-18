@@ -55,21 +55,57 @@ def test_load_sample(sample_path: Path) -> None:
     assert len(content) > 0
 
 
-def test_parse_file_not_implemented_yet(engine: TreeSitterEngine, sample_path: Path) -> None:
-    # TODO: khi tích hợp Tree-sitter grammar thật, thay assertion này bằng
-    # kiểm tra danh sách CandidateSink trả về đúng theo rule .scm.
-    with pytest.raises(NotImplementedError):
-        engine.parse_file(str(sample_path))
-
-
 @pytest.mark.parametrize(
     "extension",
-    [".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh"],
+    [".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".java", ".py"],
 )
-def test_c_cpp_rule_wiring_loads_query(engine: TreeSitterEngine, extension: str) -> None:
-    """Rule .scm cho C/C++ đã được wiring đúng trong LANGUAGE_RULE_MAP —
-    không còn raise ValueError như trước khi rules/c, rules/cpp có nội dung.
-    Chưa test parse_file() thật vì TreeSitterEngine chưa tích hợp grammar."""
+def test_rule_wiring_loads_query(engine: TreeSitterEngine, extension: str) -> None:
+    """Rule .scm cho mọi ngôn ngữ đã được wiring đúng trong LANGUAGE_RULE_MAP."""
     query_text = engine._load_query(extension)
     assert len(query_text) > 0
     assert "@sink.name" in query_text
+
+
+@pytest.mark.parametrize(
+    "sample,expected_sinks",
+    [
+        (VULNERABLE_PY, {"popen", "call"}),
+        (SAFE_PY, {"run"}),
+        (VULNERABLE_JAVA, {"executeQuery", "exec"}),
+        (SAFE_JAVA, {"executeQuery"}),
+        (VULNERABLE_C, {"strcpy", "printf", "gets"}),
+        (SAFE_C, {"strncpy", "printf"}),
+        (VULNERABLE_CPP, {"strcpy", "system", "delete"}),
+        (SAFE_CPP, {"strncpy"}),
+    ],
+)
+def test_parse_file_finds_expected_sinks(
+    engine: TreeSitterEngine, sample: Path, expected_sinks: set[str]
+) -> None:
+    candidates = engine.parse_file(str(sample))
+    assert len(candidates) > 0
+
+    found_names = {c.sink_name for c in candidates}
+    assert expected_sinks.issubset(found_names)
+
+    for candidate in candidates:
+        assert candidate.file_path == str(sample)
+        assert candidate.line > 0
+        assert candidate.column > 0
+        assert candidate.snippet != ""
+
+
+def test_parse_file_extracts_cwe_tags_for_known_pattern(engine: TreeSitterEngine) -> None:
+    candidates = engine.parse_file(str(VULNERABLE_C))
+    strcpy_candidates = [c for c in candidates if c.sink_name == "strcpy"]
+    assert strcpy_candidates
+    assert "CWE-120" in strcpy_candidates[0].cwe
+
+
+def test_parse_file_unsupported_extension_returns_empty_list(
+    engine: TreeSitterEngine, tmp_path: Path
+) -> None:
+    # Ngoài phạm vi hỗ trợ (vd. .txt) -> list rỗng, KHÔNG raise lỗi.
+    unsupported = tmp_path / "notes.txt"
+    unsupported.write_text("just some plain text, not source code", encoding="utf-8")
+    assert engine.parse_file(str(unsupported)) == []

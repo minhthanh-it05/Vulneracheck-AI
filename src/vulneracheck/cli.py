@@ -2,7 +2,7 @@
 cli.py: Entrypoint điều khiển lệnh CLI cho VulneraCheck-AI.
 
 Usage:
-    vulneracheck scan --path <target_path> --threshold 0.85
+    vulneracheck scan --path <target_path>
 """
 
 from __future__ import annotations
@@ -39,13 +39,6 @@ def cli() -> None:
     help="Đường dẫn tới file hoặc thư mục mã nguồn cần scan.",
 )
 @click.option(
-    "--threshold",
-    default=0.85,
-    show_default=True,
-    type=click.FloatRange(0.0, 1.0),
-    help="Ngưỡng confidence tối thiểu (AI verifier) để một finding được báo cáo.",
-)
-@click.option(
     "--output",
     "output_path",
     default="report.sarif.json",
@@ -53,16 +46,17 @@ def cli() -> None:
     type=click.Path(path_type=Path),
     help="Đường dẫn file báo cáo SARIF 2.1.0 đầu ra.",
 )
-def scan(target_path: Path, threshold: float, output_path: Path) -> None:
+def scan(target_path: Path, output_path: Path) -> None:
     """Quét mã nguồn tại --path và xuất báo cáo SARIF."""
     click.echo(f"{Fore.CYAN}[VulneraCheck] Đang quét: {target_path}{Style.RESET_ALL}")
-    click.echo(f"{Fore.CYAN}[VulneraCheck] Ngưỡng confidence: {threshold}{Style.RESET_ALL}")
 
-    config = PipelineConfig(target_path=target_path, threshold=threshold, output_path=output_path)
+    config = PipelineConfig(target_path=target_path, output_path=output_path)
 
     try:
         result = run_pipeline(config)
     except NotImplementedError:
+        # Safety net: phòng trường hợp còn sót layer nào chưa nối hết. Đường
+        # chạy chính (không lỗi) đã dùng pipeline thật ở nhánh else bên dưới.
         click.echo(f"{Fore.YELLOW}[VulneraCheck] {PARTIAL_PIPELINE_WARNING}{Style.RESET_ALL}", err=True)
         report = SarifReport(
             run_properties={"status": "partial", "message": PARTIAL_PIPELINE_WARNING}
@@ -71,9 +65,11 @@ def scan(target_path: Path, threshold: float, output_path: Path) -> None:
         click.echo(f"{Fore.GREEN}[VulneraCheck] Báo cáo placeholder đã ghi tại: {output_path}{Style.RESET_ALL}")
         sys.exit(1)
 
-    if result.report is not None:
-        result.report.write(output_path)
-    click.echo(f"{Fore.GREEN}[VulneraCheck] Báo cáo đã ghi tại: {output_path}{Style.RESET_ALL}")
+    finding_count = len(result.report.findings) if result.report is not None else 0
+    click.echo(
+        f"{Fore.GREEN}[VulneraCheck] Quét xong: {len(result.candidate_sinks)} candidate sink, "
+        f"{finding_count} finding được báo cáo. SARIF ghi tại: {output_path}{Style.RESET_ALL}"
+    )
 
 
 if __name__ == "__main__":

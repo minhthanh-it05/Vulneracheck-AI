@@ -16,6 +16,22 @@ SARIF_SCHEMA = (
 )
 TOOL_NAME = "VulneraCheck-AI"
 
+REDACT_VISIBLE_PREFIX = 4
+
+
+def redact_secret(matched_text: str, visible_prefix: int = REDACT_VISIBLE_PREFIX) -> str:
+    """Che giá trị secret thật trước khi đưa vào output công khai (SARIF, PR
+    comment). Chỉ giữ lại `visible_prefix` ký tự đầu, phần còn lại thay bằng
+    "****(N more chars)". Vd: "AKIAIOSFODNN7EXAMPLE" -> "AKIA****(16 more chars)".
+
+    Chuỗi ngắn hơn hoặc bằng visible_prefix bị che hoàn toàn (không lộ ký tự
+    nào) để tránh trường hợp secret ngắn bị lộ hết qua "phần hiện".
+    """
+    if len(matched_text) <= visible_prefix:
+        return "*" * len(matched_text)
+    hidden_count = len(matched_text) - visible_prefix
+    return f"{matched_text[:visible_prefix]}****({hidden_count} more chars)"
+
 
 @dataclass
 class Finding:
@@ -26,6 +42,7 @@ class Finding:
     start_column: int = 1
     severity: str = "warning"
     confidence: float = 0.0
+    extra_properties: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -64,7 +81,10 @@ class SarifReport:
                             }
                         }
                     ],
-                    "properties": {"confidence": finding.confidence},
+                    "properties": {
+                        "confidence": finding.confidence,
+                        **finding.extra_properties,
+                    },
                 }
             )
 

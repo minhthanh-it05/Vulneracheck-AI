@@ -12,6 +12,10 @@ license = { file = "LICENSE" }
 dependencies = [
     "onnxruntime~=1.29.0",
     "tree-sitter~=0.26.0",
+    "tree-sitter-c~=0.24.2",
+    "tree-sitter-cpp~=0.23.4",
+    "tree-sitter-java~=0.23.5",
+    "tree-sitter-python~=0.25.0",
     "transformers~=5.15.0",
     "numpy~=2.4.6",
     "sarif-om~=1.0.4",

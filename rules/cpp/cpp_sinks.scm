@@ -20,9 +20,10 @@
 
 ; delete / delete[] (CWE-416, CWE-476) — riêng của C++, không có trong C.
 ; Không phân biệt object có bị double-free/dangling sau đó hay không.
-(delete_expression
-  "delete" @sink.name
-  argument: (_) @sink.args)
+; Lưu ý: grammar tree-sitter-cpp không đặt field name cho toán hạng của
+; delete_expression (chỉ là child vị trí), nên capture cả node làm sink.args
+; thay vì trích riêng toán hạng.
+(delete_expression "delete" @sink.name) @sink.args
 
 ; Format string (CWE-134) — không phân biệt format string có phải literal
 ; hay không ở Layer 2 (quá phức tạp cho query đơn giản), để Layer 3 xử lý.
@@ -37,7 +38,8 @@
   arguments: (argument_list) @sink.args
   (#match? @sink.name "^(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)$"))
 
-; Command/process injection qua namespace-qualified call (vd. std::system(...))
+; Command/process injection qua namespace-qualified call (CWE-78, CWE-88) —
+; vd. std::system(...)
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
