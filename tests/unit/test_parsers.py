@@ -109,3 +109,40 @@ def test_parse_file_unsupported_extension_returns_empty_list(
     unsupported = tmp_path / "notes.txt"
     unsupported.write_text("just some plain text, not source code", encoding="utf-8")
     assert engine.parse_file(str(unsupported)) == []
+
+
+@pytest.mark.parametrize(
+    "sample,sink_name,expected_signature",
+    [
+        (VULNERABLE_C, "strcpy", "void copy_input"),
+        (SAFE_C, "strncpy", "void copy_input"),
+        (VULNERABLE_CPP, "strcpy", "void copy_input"),
+        (SAFE_CPP, "strncpy", "void copy_input"),
+        (VULNERABLE_JAVA, "exec", "public void runCommand"),
+        (VULNERABLE_PY, "popen", "def run_ping"),
+    ],
+)
+def test_parse_file_snippet_is_full_enclosing_function(
+    engine: TreeSitterEngine, sample: Path, sink_name: str, expected_signature: str
+) -> None:
+    # snippet phải là TOÀN BỘ function bao quanh sink (nhiều dòng, chứa chữ
+    # ký hàm), không chỉ 1 dòng chứa sink — giảm distribution shift so với
+    # dữ liệu function-level lúc train verifier.
+    candidates = engine.parse_file(str(sample))
+    match = next(c for c in candidates if c.sink_name == sink_name)
+    assert expected_signature in match.snippet
+    assert match.snippet.count("\n") > 0
+
+
+def test_parse_file_falls_back_to_single_line_without_enclosing_function(
+    engine: TreeSitterEngine, tmp_path: Path
+) -> None:
+    # Sink ở top-level (không nằm trong function nào) -> fallback về đúng 1
+    # dòng chứa sink, không lỗi, không trả về cả file.
+    top_level_file = tmp_path / "top_level.py"
+    top_level_file.write_text('import os\nos.system("ls")\n', encoding="utf-8")
+
+    candidates = engine.parse_file(str(top_level_file))
+
+    assert len(candidates) == 1
+    assert candidates[0].snippet == 'os.system("ls")'

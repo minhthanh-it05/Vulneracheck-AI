@@ -41,6 +41,15 @@ _LANGUAGE_MODULE_MAP = {
 
 _CWE_PATTERN = re.compile(r"CWE-\d+")
 
+# Tên node "function-level" theo từng grammar — dùng để tìm function/method
+# bao quanh 1 sink khi trích snippet (function_definition: C/C++/Python;
+# method_declaration/constructor_declaration: Java).
+_FUNCTION_NODE_TYPES = {
+    "function_definition",
+    "method_declaration",
+    "constructor_declaration",
+}
+
 
 @dataclass
 class CandidateSink:
@@ -78,6 +87,23 @@ def _extract_cwe_tags(query: Query, query_text: str) -> list[list[str]]:
                 break
         tags.append(_CWE_PATTERN.findall(" ".join(comment_lines)))
     return tags
+
+
+def _find_enclosing_function_text(node, source_bytes: bytes) -> str | None:
+    """Duyệt lên các node cha của `node` (thường là node @sink.name) tới khi
+    gặp function/method definition (xem _FUNCTION_NODE_TYPES) và trả về toàn
+    bộ text của node đó. Trả về None nếu không tìm thấy (sink ở top-level,
+    lambda, hoặc grammar không có node function-level phù hợp) — gọi nơi
+    dùng phải tự fallback, hàm này không tự fallback về 1 dòng.
+    """
+    current = node.parent
+    while current is not None:
+        if current.type in _FUNCTION_NODE_TYPES:
+            return source_bytes[current.start_byte : current.end_byte].decode(
+                "utf-8", errors="ignore"
+            )
+        current = current.parent
+    return None
 
 
 class TreeSitterEngine:
@@ -133,6 +159,13 @@ class TreeSitterEngine:
         không lọc gì thêm ở đây — lọc là việc của rule .scm (viết pattern
         chặt hơn) hoặc của Layer 3 (verifier), không phải của hàm này.
 
+        snippet ưu tiên lấy TOÀN BỘ function/method bao quanh sink (không
+        chỉ 1 dòng) — verifier (Layer 3) được train/calibrate trên dữ liệu
+        function-level đầy đủ, đưa đúng ngữ cảnh này vào giúp giảm distribution
+        shift so với lúc train. Nếu không tìm được function bao quanh (sink ở
+        top-level, lambda phức tạp...), fallback về đúng 1 dòng chứa sink như
+        trước.
+
         Ngôn ngữ không có rule tương ứng (ngoài phạm vi hỗ trợ) trả về list
         rỗng, KHÔNG raise lỗi — file không thuộc phạm vi quét không phải lỗi
         hệ thống.
@@ -159,11 +192,16 @@ class TreeSitterEngine:
             )
             line = name_node.start_point[0] + 1
             column = name_node.start_point[1] + 1
-            snippet = (
-                source_lines[line - 1].strip()
-                if 0 <= line - 1 < len(source_lines)
-                else sink_name
-            )
+
+            function_snippet = _find_enclosing_function_text(name_node, source_bytes)
+            if function_snippet is not None:
+                snippet = function_snippet
+            else:
+                snippet = (
+                    source_lines[line - 1].strip()
+                    if 0 <= line - 1 < len(source_lines)
+                    else sink_name
+                )
             cwe = cwe_tags[pattern_index] if pattern_index < len(cwe_tags) else []
 
             candidates.append(
