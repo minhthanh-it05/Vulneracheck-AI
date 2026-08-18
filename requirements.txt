@@ -1,8 +1,3 @@
-onnxruntime>=1.17.0
-tree-sitter>=0.21.0
-transformers>=4.38.0
-numpy>=1.24.0
-sarif-om>=1.0.4
-jschema-to-python>=1.2.3
-click>=8.1.7
-colorama>=0.4.6
+# Nguồn khai báo dependency duy nhất là pyproject.toml (tránh 2 file lệch nhau).
+# `pip install -r requirements.txt` == `pip install -e .`
+-e .
