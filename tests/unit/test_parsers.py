@@ -159,6 +159,53 @@ def test_parse_file_detects_namespace_qualified_calls(engine: TreeSitterEngine) 
     assert "CWE-120" in sprintf_candidates[0].cwe
 
 
+def test_parse_file_detects_wrapper_function_names(
+    engine: TreeSitterEngine, tmp_path: Path
+) -> None:
+    # Predicate #match? phải bắt được wrapper function tự định nghĩa bọc
+    # quanh hàm libc gốc (vd. mpack_memcpy trong mpack thật) — trước khi
+    # sửa (^|_)(...)($|_), exact-match "^(...)$" bỏ sót hoàn toàn case này.
+    # Case thật: nơi GỌI wrapper (vd. mpack_memcpy(...)), không phải nơi
+    # định nghĩa wrapper gọi hàm libc gốc bên trong (case đó @sink.name đã
+    # bắt được "memcpy"/"strcpy" từ trước, không phải gap cần sửa).
+    wrapper_file = tmp_path / "wrapper.c"
+    wrapper_file.write_text(
+        "void use_buffer(char *dst, const char *src, size_t n) {\n"
+        "    mpack_memcpy(dst, src, n);\n"
+        "}\n"
+        "void use_string(char *dst, const char *src) {\n"
+        "    my_strcpy_wrapper(dst, src);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    candidates = engine.parse_file(str(wrapper_file))
+    found_names = {c.sink_name for c in candidates}
+
+    assert "mpack_memcpy" in found_names
+    assert "my_strcpy_wrapper" in found_names
+
+
+def test_parse_file_does_not_match_unrelated_function_names(
+    engine: TreeSitterEngine, tmp_path: Path
+) -> None:
+    # Nới rộng match KHÔNG được match nhầm tên hàm hoàn toàn không liên quan
+    # chỉ tình cờ chứa 1 chuỗi con dính liền (không tách bằng underscore).
+    unrelated_file = tmp_path / "unrelated.c"
+    unrelated_file.write_text(
+        "void process_data(void) { calculate_total(); }\n"
+        "int mallocator(void) { return 0; }\n"
+        "void freetype_init(void) {}\n"
+        "void calculate_total(void) {}\n",
+        encoding="utf-8",
+    )
+
+    candidates = engine.parse_file(str(unrelated_file))
+    found_names = {c.sink_name for c in candidates}
+
+    assert found_names == set()
+
+
 def test_parse_file_falls_back_to_single_line_without_enclosing_function(
     engine: TreeSitterEngine, tmp_path: Path
 ) -> None:

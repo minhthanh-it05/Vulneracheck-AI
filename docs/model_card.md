@@ -132,7 +132,7 @@ chỉnh lại threshold C/C++ dựa trên phân bố confidence thực tế trê
 `sds` để tham chiếu, (3) cân nhắc feature/signal bổ sung ngoài text thuần
 (vd. có phép tính bound rõ ràng hay không) nếu (1)+(2) không đủ.
 
-### False-negative gap ở Layer 2 (Tree-sitter rule) — phát hiện 2026-08-18
+### False-negative gap ở Layer 2 (Tree-sitter rule) — phát hiện 2026-08-18, đã vá 2026-08-18
 
 **Lưu ý: đây là rủi ro theo hướng NGƯỢC LẠI với false positive ở trên — bỏ
 sót lỗi thật, không phải báo sai lỗi giả — không gộp chung 2 vấn đề.**
@@ -145,21 +145,42 @@ gọi `memcpy`/`malloc`/`realloc` thật (xác nhận bằng `grep`), nhưng
 
 **Nguyên nhân:** mpack tự định nghĩa wrapper riêng cho các hàm libc
 (`mpack_memcpy`, `mpack_realloc`, ...) thay vì gọi thẳng `memcpy`/`realloc`.
-Rule `.scm` ở Layer 2 hiện chỉ match theo tên định danh **chính xác**
+Rule `.scm` ở Layer 2 khi đó chỉ match theo tên định danh **chính xác**
 (`#match? @sink.name "^(memcpy|memmove|...)$"`) — `mpack_memcpy` không khớp
 regex này dù về bản chất vẫn là một lời gọi copy bộ nhớ thô, cùng rủi ro như
 `memcpy` trần.
 
-**Tác động:** Bất kỳ codebase nào tự định nghĩa wrapper cho hàm buffer/memory/
-format (rất phổ biến trong code C lớn — thường để thêm logging, đo đạc, hay
-portability layer) sẽ **lọt hoàn toàn qua Layer 2**, không được forward lên
-Layer 3, không xuất hiện trong SARIF dù có lỗi thật bên trong. Đây là false
-negative ở mức triệt để nhất — không phải "confidence thấp", mà là "không
-được quét tới".
+**Tác động (trước khi vá):** Bất kỳ codebase nào tự định nghĩa wrapper cho
+hàm buffer/memory/format (rất phổ biến trong code C lớn — thường để thêm
+logging, đo đạc, hay portability layer) sẽ **lọt hoàn toàn qua Layer 2**,
+không được forward lên Layer 3, không xuất hiện trong SARIF dù có lỗi thật
+bên trong. Đây là false negative ở mức triệt để nhất — không phải "confidence
+thấp", mà là "không được quét tới".
 
-**Chưa xử lý ở đợt này** — ghi nhận làm rủi ro đã biết, cần quyết định hướng
-xử lý sau (vd. cho phép cấu hình alias tên hàm theo project, hoặc match theo
-substring/suffix thay vì exact match — đánh đổi với nguy cơ tăng false
-positive nếu match quá lỏng).
+**Cách đã vá:** Đổi predicate `#match?` trong toàn bộ `rules/c/c_sinks.scm`
+và `rules/cpp/cpp_sinks.scm` (mọi nhóm CWE, cả bản qualify `std::` lẫn
+không-qualify) từ exact-match `"^(...)$"` sang
+`"(^|_)(...)($|_)"` — yêu cầu tên sink là một **thành phần tách biệt bằng
+underscore** trong tên hàm được gọi, không cần khớp tuyệt đối cả tên. Bắt
+được `mpack_memcpy`, `my_strcpy_wrapper`, `safe_malloc`, v.v., đồng thời
+**không** match nhầm tên hàm chỉ tình cờ chứa chuỗi con dính liền (vd.
+`mallocator`, `freetype_init` — không có underscore phân tách nên không
+khớp). Có test hồi quy cho cả 2 chiều (`test_parse_file_detects_wrapper_function_names`,
+`test_parse_file_does_not_match_unrelated_function_names` trong
+`tests/unit/test_parsers.py`).
+
+**Đánh đổi chấp nhận được:** match rộng hơn = tăng false positive tiềm năng
+ở Layer 2 (nhiều candidate hơn được forward lên Layer 3) — đúng theo triết
+lý high-recall xuyên suốt dự án của Layer 2 (rule `malloc`/`calloc` đã áp
+dụng logic match-rộng tương tự từ trước, dù với lý do khác); Layer 3
+(verifier) là nơi lọc precision, không phải Layer 2.
+
+**Giới hạn còn lại (không giải quyết được bằng regex theo tên):** Wrapper
+đặt tên **hoàn toàn không chứa** tên sink gốc như một thành phần (vd.
+`safeCopy` không chứa `strcpy`/`memcpy` dưới bất kỳ dạng nào, hoặc quy ước
+đặt tên không dùng underscore như `mpackMemcpy` theo camelCase) vẫn sẽ bị bỏ
+sót — đây là giới hạn cố hữu của cách tiếp cận match theo tên định danh, chỉ
+giải quyết được bằng phân tích alias/type thật (ngoài phạm vi Tree-sitter
+query đơn giản ở Layer 2).
 
 ## Quy trình cập nhật model

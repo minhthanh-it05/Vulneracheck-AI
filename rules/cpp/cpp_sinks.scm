@@ -9,12 +9,22 @@
 ; Mỗi nhóm 1/2/3 có 2 pattern song song: gọi trực tiếp (vd. strcpy(...)) và
 ; gọi qua namespace-qualified (vd. std::strcpy(...)) — code C++ hiện đại rất
 ; hay gọi tường minh qua std::, cả 2 dạng đều phải được forward lên Layer 3.
+;
+; Predicate #match? dùng dạng "(^|_)(...)($|_)" thay vì exact-match "^(...)$":
+; bắt được cả wrapper function tự định nghĩa bọc quanh hàm libc gốc (vd.
+; mpack_memcpy, safe_strcpy, my_malloc_wrapper) — phát hiện qua thực nghiệm
+; trên mpack (dùng mpack_memcpy thay vì memcpy trực tiếp, Layer 2 cũ bỏ sót
+; hoàn toàn). Yêu cầu tên sink phải là 1 thành phần tách biệt bằng underscore
+; (đầu/cuối chuỗi hoặc liền kề "_"), KHÔNG match substring dính liền (vd.
+; "mallocator", "freetype_init" không bị match nhầm). Đánh đổi: bắt rộng hơn
+; = tăng false positive tiềm năng, chấp nhận được theo triết lý high-recall
+; của Layer 2 (Layer 3 lọc precision sau).
 
 ; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — gọi trực tiếp
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)$"))
+  (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)"))
 
 ; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — qua
 ; namespace-qualified call (vd. std::strcpy(...))
@@ -22,13 +32,13 @@
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)$"))
+  (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)"))
 
 ; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — gọi trực tiếp
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)$"))
+  (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)"))
 
 ; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — qua
 ; namespace-qualified call (vd. std::memcpy(...))
@@ -36,7 +46,7 @@
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)$"))
+  (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)"))
 
 ; delete / delete[] (CWE-416, CWE-476) — riêng của C++, không có trong C.
 ; Không phân biệt object có bị double-free/dangling sau đó hay không.
@@ -51,20 +61,20 @@
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(printf|fprintf|snprintf|syslog|vfprintf)$"))
+  (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)"))
 
 ; Format string (CWE-134) — qua namespace-qualified call (vd. std::printf(...))
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(printf|fprintf|snprintf|syslog|vfprintf)$"))
+  (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)"))
 
 ; Command/process injection (CWE-78, CWE-88) — gọi trực tiếp (không qua namespace)
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)$"))
+  (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)($|_)"))
 
 ; Command/process injection qua namespace-qualified call (CWE-78, CWE-88) —
 ; vd. std::system(...)
@@ -72,7 +82,7 @@
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(system|popen|exec|execl|execlp|execle|execv|execvp|execve)$"))
+  (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve)($|_)"))
 
 ; malloc/calloc — nguy cơ integer overflow khi cấp phát bộ nhớ (CWE-190 kết
 ; hợp CWE-789). Match TẤT CẢ lời gọi, không lọc theo dạng tham số (literal,
@@ -86,4 +96,4 @@
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(malloc|calloc)$"))
+  (#match? @sink.name "(^|_)(malloc|calloc)($|_)"))

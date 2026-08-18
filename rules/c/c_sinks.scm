@@ -1,31 +1,41 @@
 ; Tree-sitter query: dangerous sinks in C source
 ; High-recall: chỉ match tên hàm gọi, KHÔNG cố phân tích context/đã sanitize
 ; hay chưa — việc đó để Layer 3 (verifier) quyết định.
+;
+; Predicate #match? dùng dạng "(^|_)(...)($|_)" thay vì exact-match "^(...)$":
+; bắt được cả wrapper function tự định nghĩa bọc quanh hàm libc gốc (vd.
+; mpack_memcpy, safe_strcpy, my_malloc_wrapper) — phát hiện qua thực nghiệm
+; trên mpack (dùng mpack_memcpy thay vì memcpy trực tiếp, Layer 2 cũ bỏ sót
+; hoàn toàn). Yêu cầu tên sink phải là 1 thành phần tách biệt bằng underscore
+; (đầu/cuối chuỗi hoặc liền kề "_"), KHÔNG match substring dính liền (vd.
+; "mallocator", "freetype_init" không bị match nhầm). Đánh đổi: bắt rộng hơn
+; = tăng false positive tiềm năng, chấp nhận được theo triết lý high-recall
+; của Layer 2 (Layer 3 lọc precision sau).
 
 ; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125)
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)$"))
+  (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)"))
 
 ; Memory-unsafe operations (CWE-119, CWE-416, CWE-476)
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)$"))
+  (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)"))
 
 ; Format string (CWE-134) — không phân biệt format string có phải literal
 ; hay không ở Layer 2 (quá phức tạp cho query đơn giản), để Layer 3 xử lý.
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(printf|fprintf|snprintf|syslog|vfprintf)$"))
+  (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)"))
 
 ; Command/process injection (CWE-78, CWE-88)
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)$"))
+  (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)($|_)"))
 
 ; malloc/calloc — nguy cơ integer overflow khi cấp phát bộ nhớ (CWE-190 kết
 ; hợp CWE-789). Match TẤT CẢ lời gọi, không lọc theo dạng tham số (literal,
@@ -39,4 +49,4 @@
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "^(malloc|calloc)$"))
+  (#match? @sink.name "(^|_)(malloc|calloc)($|_)"))
