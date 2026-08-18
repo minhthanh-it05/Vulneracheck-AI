@@ -16,6 +16,32 @@ SARIF_SCHEMA = (
 )
 TOOL_NAME = "VulneraCheck-AI"
 
+# Nhóm CWE đã xác nhận verifier (Layer 3) có tỷ lệ false positive hệ thống
+# cao trên C/C++ (9/9 sample an toàn dùng đúng cách vẫn bị flag confidence
+# 0.69-0.97) — xem docs/model_card.md, mục "False positive hệ thống trên họ
+# hàm buffer/format an toàn (C/C++)". Buffer-copy (CWE-120, CWE-787, CWE-125),
+# memory-unsafe (CWE-119, CWE-416, CWE-476), format-string (CWE-134).
+# KHÔNG bao gồm command injection (CWE-78, CWE-88) hay double-free/UAF thuần
+# qua delete (CWE-416/CWE-476 khi đứng riêng ở nhóm delete, không phải nhóm
+# này) — 2 nhóm đó KHÔNG bị vấn đề tương tự, ngược lại cải thiện tốt sau khi
+# mở rộng snippet. Dễ chỉnh sửa khi có thêm bằng chứng cho nhóm sink khác.
+LOW_CONFIDENCE_CWE_CATEGORIES = [
+    "CWE-120",
+    "CWE-787",
+    "CWE-125",
+    "CWE-119",
+    "CWE-416",
+    "CWE-476",
+    "CWE-134",
+]
+
+LOW_CONFIDENCE_CATEGORY_NOTE = (
+    "Model verification cho nhóm sink buffer/format C/C++ đã ghi nhận tỷ lệ "
+    "false positive cao trong kiểm thử nội bộ (9/9 sample an toàn bị flag "
+    "sai) — xem docs/model_card.md. Cần review thủ công kỹ hơn, không nên "
+    "tin thẳng confidence score."
+)
+
 REDACT_VISIBLE_PREFIX = 4
 
 

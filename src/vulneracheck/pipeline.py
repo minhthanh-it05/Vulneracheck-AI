@@ -21,9 +21,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vulneracheck.parsers import CandidateSink, TreeSitterEngine
-from vulneracheck.reporting import Finding, SarifReport, redact_secret
+from vulneracheck.reporting import (
+    Finding,
+    LOW_CONFIDENCE_CATEGORY_NOTE,
+    LOW_CONFIDENCE_CWE_CATEGORIES,
+    SarifReport,
+    redact_secret,
+)
 from vulneracheck.secrets import SecretFinding, scan_file
 from vulneracheck.verifier import ONNXVerifier, VerifierResult
+
+# Sink KHÔNG được áp dụng giảm thiểu low-confidence dù CWE trùng với
+# LOW_CONFIDENCE_CWE_CATEGORIES. "delete"/"delete[]" (C++) dùng chung mã
+# CWE-416/CWE-476 với nhóm memory-unsafe (free/realloc/...) trong rule .scm,
+# nhưng KHÔNG bị vấn đề false positive hệ thống tương tự — ngược lại,
+# confidence cải thiện rõ sau khi mở rộng snippet (0.66 -> 0.98). Loại trừ
+# tường minh để tránh bị bắt nhầm chỉ vì trùng mã CWE với nhóm khác.
+_LOW_CONFIDENCE_OVERRIDE_EXCLUDED_SINKS = {"delete"}
 
 # Phần mở rộng file -> ngôn ngữ mà verifier (Layer 3) hỗ trợ.
 # .h luôn được coi là "c" (quy ước lúc train model); .hpp/.hh/.cc/.cxx là "cpp".
@@ -182,7 +196,26 @@ def run_reporting_layer(
           — model xác nhận có lỗi.
         - Candidate label=0 và status="OK": KHÔNG xuất finding — model xác
           nhận an toàn, đây chính là false positive mà Layer 3 tồn tại để lọc.
+
+    Giảm thiểu false positive hệ thống (xem docs/model_card.md): với mọi
+    finding mà verifier ĐÃ chạy (ml_verified=True — cả UNCERTAIN lẫn
+    label=1/OK), nếu candidate.cwe thuộc LOW_CONFIDENCE_CWE_CATEGORIES
+    (buffer-copy, memory-unsafe, format-string — nhóm đã xác nhận 9/9 sample
+    an toàn bị flag sai), severity bị ép về "warning" bất kể confidence/label
+    thật là gì, kèm properties.low_confidence_category=true + note giải
+    thích. Confidence số thật KHÔNG bị xoá/làm tròn — vẫn giữ nguyên trong
+    properties để đảm bảo minh bạch. "delete" bị loại trừ tường minh dù trùng
+    mã CWE (xem _LOW_CONFIDENCE_OVERRIDE_EXCLUDED_SINKS) vì không bị vấn đề
+    tương tự.
     """
+    def _apply_low_confidence_override(finding: Finding, candidate: CandidateSink) -> None:
+        if candidate.sink_name in _LOW_CONFIDENCE_OVERRIDE_EXCLUDED_SINKS:
+            return
+        if any(cwe in LOW_CONFIDENCE_CWE_CATEGORIES for cwe in candidate.cwe):
+            finding.severity = "warning"
+            finding.extra_properties["low_confidence_category"] = True
+            finding.extra_properties["note"] = LOW_CONFIDENCE_CATEGORY_NOTE
+
     report = SarifReport()
 
     for finding in secret_findings:
@@ -226,48 +259,48 @@ def run_reporting_layer(
             continue
 
         if result.status == "UNCERTAIN_NEEDS_REVIEW":
-            report.add(
-                Finding(
-                    rule_id=f"sink/{candidate.sink_name}",
-                    message=(
-                        f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — model không đủ "
-                        f"tin cậy để kết luận (confidence={result.confidence:.3f} nằm trong "
-                        "uncertain zone), cần review thủ công."
-                    ),
-                    file_path=candidate.file_path,
-                    start_line=candidate.line,
-                    start_column=candidate.column,
-                    severity="warning",
-                    confidence=result.confidence or 0.0,
-                    extra_properties={
-                        **base_properties,
-                        "ml_verified": True,
-                        "status": result.status,
-                        "label": result.label,
-                    },
-                )
+            uncertain_finding = Finding(
+                rule_id=f"sink/{candidate.sink_name}",
+                message=(
+                    f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — model không đủ "
+                    f"tin cậy để kết luận (confidence={result.confidence:.3f} nằm trong "
+                    "uncertain zone), cần review thủ công."
+                ),
+                file_path=candidate.file_path,
+                start_line=candidate.line,
+                start_column=candidate.column,
+                severity="warning",
+                confidence=result.confidence or 0.0,
+                extra_properties={
+                    **base_properties,
+                    "ml_verified": True,
+                    "status": result.status,
+                    "label": result.label,
+                },
             )
+            _apply_low_confidence_override(uncertain_finding, candidate)
+            report.add(uncertain_finding)
         elif result.label == 1:
-            report.add(
-                Finding(
-                    rule_id=f"sink/{candidate.sink_name}",
-                    message=(
-                        f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — model xác nhận "
-                        f"CÓ LỖI (confidence={result.confidence:.3f})."
-                    ),
-                    file_path=candidate.file_path,
-                    start_line=candidate.line,
-                    start_column=candidate.column,
-                    severity="error",
-                    confidence=result.confidence or 0.0,
-                    extra_properties={
-                        **base_properties,
-                        "ml_verified": True,
-                        "status": result.status,
-                        "label": result.label,
-                    },
-                )
+            vulnerable_finding = Finding(
+                rule_id=f"sink/{candidate.sink_name}",
+                message=(
+                    f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — model xác nhận "
+                    f"CÓ LỖI (confidence={result.confidence:.3f})."
+                ),
+                file_path=candidate.file_path,
+                start_line=candidate.line,
+                start_column=candidate.column,
+                severity="error",
+                confidence=result.confidence or 0.0,
+                extra_properties={
+                    **base_properties,
+                    "ml_verified": True,
+                    "status": result.status,
+                    "label": result.label,
+                },
             )
+            _apply_low_confidence_override(vulnerable_finding, candidate)
+            report.add(vulnerable_finding)
         # label == 0 và status == "OK": model xác nhận an toàn -> không xuất
         # finding (đây chính là false positive mà Layer 3 tồn tại để lọc).
 
