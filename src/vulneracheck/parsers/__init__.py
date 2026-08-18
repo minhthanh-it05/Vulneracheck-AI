@@ -12,9 +12,18 @@ from pathlib import Path
 
 RULES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "rules"
 
+#  Khớp CHÍNH XÁC với _EXTENSION_LANGUAGE_MAP trong pipeline.py — .h là "c",
+# .hpp/.hh/.cc/.cxx là "cpp" (quy ước lúc train model, xem pipeline.py).
 LANGUAGE_RULE_MAP = {
     ".py": "python/python_sinks.scm",
     ".java": "java/java_sinks.scm",
+    ".c": "c/c_sinks.scm",
+    ".h": "c/c_sinks.scm",
+    ".cpp": "cpp/cpp_sinks.scm",
+    ".cc": "cpp/cpp_sinks.scm",
+    ".cxx": "cpp/cpp_sinks.scm",
+    ".hpp": "cpp/cpp_sinks.scm",
+    ".hh": "cpp/cpp_sinks.scm",
 }
 
 
