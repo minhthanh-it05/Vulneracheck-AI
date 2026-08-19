@@ -10,21 +10,43 @@
 ; gọi qua namespace-qualified (vd. std::strcpy(...)) — code C++ hiện đại rất
 ; hay gọi tường minh qua std::, cả 2 dạng đều phải được forward lên Layer 3.
 ;
-; Predicate #match? dùng dạng "(^|_)(...)($|_)" thay vì exact-match "^(...)$":
-; bắt được cả wrapper function tự định nghĩa bọc quanh hàm libc gốc (vd.
-; mpack_memcpy, safe_strcpy, my_malloc_wrapper) — phát hiện qua thực nghiệm
-; trên mpack (dùng mpack_memcpy thay vì memcpy trực tiếp, Layer 2 cũ bỏ sót
-; hoàn toàn). Yêu cầu tên sink phải là 1 thành phần tách biệt bằng underscore
-; (đầu/cuối chuỗi hoặc liền kề "_"), KHÔNG match substring dính liền (vd.
-; "mallocator", "freetype_init" không bị match nhầm). Đánh đổi: bắt rộng hơn
-; = tăng false positive tiềm năng, chấp nhận được theo triết lý high-recall
-; của Layer 2 (Layer 3 lọc precision sau).
+; Mỗi #match? predicate có 2 nhánh nối bằng "|", cùng phục vụ mục tiêu bắt
+; wrapper function tự định nghĩa bọc quanh hàm libc gốc (phát hiện qua thực
+; nghiệm trên mpack — dùng mpack_memcpy thay vì memcpy trực tiếp, Layer 2 cũ
+; bỏ sót hoàn toàn):
+;
+;   1. "(^|_)(...)($|_)" — dạng snake_case: yêu cầu tên sink là 1 thành phần
+;      tách biệt bằng underscore (đầu/cuối chuỗi hoặc liền kề "_"). Bắt
+;      mpack_memcpy, safe_strcpy, my_malloc_wrapper.
+;   2. "(^|[a-z0-9_])(?=[A-Z])(?i:...)($|[A-Z]|[^a-zA-Z0-9])" — dạng
+;      camelCase/PascalCase: biên trái là start-of-string/chữ thường/số/"_"
+;      (không phải chữ hoa — tránh dính 2 chữ hoa liền kề kiểu viết tắt, vd.
+;      "XStrcpy"), NGAY SAU biên trái phải là 1 chữ hoa (lookahead
+;      "(?=[A-Z])" — đúng nghĩa "chữ cái đầu viết hoa ngay sau ranh giới
+;      từ"), rồi so khớp tên sink KHÔNG phân biệt hoa/thường qua "(?i:...)"
+;      (nên "StrCpy" — viết hoa cả 2 "hump" — vẫn khớp "strcpy", không chỉ
+;      riêng dạng "Strcpy" hoa mỗi chữ đầu), biên phải là end-of-string/chữ
+;      hoa tiếp theo (hump mới)/ký tự không phải chữ-số. Bắt mpackMemcpy,
+;      safeStrCpy, MemcpyWrapper — xem docs/model_card.md mục "False-negative
+;      gap ở Layer 2" để biết thực nghiệm và giới hạn còn lại (wrapper không
+;      chứa tên sink gốc dưới bất kỳ dạng nào, vd. "safeCopy", vẫn bị bỏ sót
+;      — giới hạn cố hữu của cách tiếp cận match-theo-tên).
+;
+; Regex engine của tree-sitter #match? hỗ trợ lookahead/lookbehind và scoped
+; case-insensitive group "(?i:...)" — đã kiểm chứng thực nghiệm bằng chính
+; tree_sitter binding của dự án trước khi viết vào đây.
+;
+; Cả 2 nhánh: KHÔNG match substring dính liền không có ranh giới (vd.
+; "mallocator", "freetype_init", "somestrcpycall" — toàn chữ thường, không
+; có điểm chuyển hoa nào để nhánh 2 bắt, và không có "_" để nhánh 1 bắt).
+; Đánh đổi: bắt rộng hơn = tăng false positive tiềm năng, chấp nhận được
+; theo triết lý high-recall của Layer 2 (Layer 3 lọc precision sau).
 
 ; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — gọi trực tiếp
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)"))
+  (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — qua
 ; namespace-qualified call (vd. std::strcpy(...))
@@ -32,13 +54,13 @@
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)"))
+  (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — gọi trực tiếp
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)"))
+  (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — qua
 ; namespace-qualified call (vd. std::memcpy(...))
@@ -46,10 +68,13 @@
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)"))
+  (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; delete / delete[] (CWE-416, CWE-476) — riêng của C++, không có trong C.
-; Không phân biệt object có bị double-free/dangling sau đó hay không.
+; Không phân biệt object có bị double-free/dangling sau đó hay không. Đây là
+; node kiểu từ khoá (delete_expression), không phải lời gọi hàm theo tên định
+; danh, nên không áp dụng match-theo-tên (snake_case/camelCase) như các nhóm
+; khác — không có khái niệm "wrapper function" cho 1 từ khoá ngôn ngữ.
 ; Lưu ý: grammar tree-sitter-cpp không đặt field name cho toán hạng của
 ; delete_expression (chỉ là child vị trí), nên capture cả node làm sink.args
 ; thay vì trích riêng toán hạng.
@@ -61,28 +86,29 @@
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)"))
+  (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:printf|fprintf|snprintf|syslog|vfprintf)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; Format string (CWE-134) — qua namespace-qualified call (vd. std::printf(...))
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)"))
+  (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:printf|fprintf|snprintf|syslog|vfprintf)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; Command/process injection (CWE-78, CWE-88) — gọi trực tiếp (không qua namespace)
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)($|_)"))
+  (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; Command/process injection qua namespace-qualified call (CWE-78, CWE-88) —
-; vd. std::system(...)
+; vd. std::system(...). Không gồm ShellExecute/CreateProcess (Windows API,
+; không thuộc namespace std::) — giữ đúng như thiết kế gốc.
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve)($|_)"))
+  (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:system|popen|exec|execl|execlp|execle|execv|execvp|execve)($|[A-Z]|[^a-zA-Z0-9])"))
 
 ; malloc/calloc — nguy cơ integer overflow khi cấp phát bộ nhớ (CWE-190 kết
 ; hợp CWE-789). Match TẤT CẢ lời gọi, không lọc theo dạng tham số (literal,
@@ -96,4 +122,4 @@
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
-  (#match? @sink.name "(^|_)(malloc|calloc)($|_)"))
+  (#match? @sink.name "(^|_)(malloc|calloc)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:malloc|calloc)($|[A-Z]|[^a-zA-Z0-9])"))

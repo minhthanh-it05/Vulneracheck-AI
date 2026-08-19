@@ -184,12 +184,63 @@ lý high-recall xuyên suốt dự án của Layer 2 (rule `malloc`/`calloc` đ�
 dụng logic match-rộng tương tự từ trước, dù với lý do khác); Layer 3
 (verifier) là nơi lọc precision, không phải Layer 2.
 
+**Giới hạn còn lại lúc đó (không giải quyết được bằng regex theo tên):**
+Wrapper đặt tên **hoàn toàn không chứa** tên sink gốc như một thành phần
+(vd. `safeCopy` không chứa `strcpy`/`memcpy` dưới bất kỳ dạng nào) vẫn sẽ bị
+bỏ sót — đây là giới hạn cố hữu của cách tiếp cận match theo tên định danh,
+chỉ giải quyết được bằng phân tích alias/type thật (ngoài phạm vi
+Tree-sitter query đơn giản ở Layer 2). Wrapper đặt tên kiểu camelCase/
+PascalCase không dùng underscore (vd. `mpackMemcpy`) LÚC ĐÓ cũng vẫn bị bỏ
+sót — đã vá tiếp ở bản cập nhật bên dưới (2026-08-19).
+
+### Mở rộng bắt wrapper dạng camelCase/PascalCase — vá 2026-08-19
+
+**Bối cảnh:** Bản vá 2026-08-18 ở trên (`"(^|_)(...)($|_)"`) chỉ bắt được
+wrapper phân tách bằng underscore (`mpack_memcpy`). Wrapper đặt tên theo
+camelCase/PascalCase — không dùng underscore, phân tách "hump" bằng cách
+viết hoa chữ cái đầu mỗi từ (vd. `mpackMemcpy`, `safeStrCpy`,
+`MemcpyWrapper`) — vẫn lọt qua Layer 2 hoàn toàn, cùng bản chất false
+negative "không được quét tới" như gap đã vá hôm trước, chỉ khác quy ước
+đặt tên.
+
+**Cách đã vá:** Thêm 1 nhánh `#match?` thứ hai (nối bằng `|`) vào TẤT CẢ
+pattern trong cả `rules/c/c_sinks.scm` và `rules/cpp/cpp_sinks.scm` (mọi
+nhóm CWE, cả bản qualify `std::` lẫn không-qualify — trừ `delete`/`delete[]`
+vì đó là node từ khoá, không phải lời gọi hàm theo tên định danh nên không
+áp dụng match-theo-tên):
+`"(^|[a-z0-9_])(?=[A-Z])(?i:...)($|[A-Z]|[^a-zA-Z0-9])"`. Ý nghĩa từng phần:
+biên trái là start-of-string/chữ thường/số/`_` (KHÔNG phải chữ hoa — tránh
+dính 2 chữ hoa liền kề kiểu viết tắt, vd. không match `XStrcpy`); ngay sau
+biên trái phải là 1 chữ hoa (`(?=[A-Z])`, lookahead không tiêu thụ ký tự —
+đúng nghĩa "chữ cái đầu viết hoa ngay sau ranh giới từ"); so khớp tên sink
+KHÔNG phân biệt hoa/thường qua scoped group `(?i:...)` (nên `StrCpy` — viết
+hoa cả 2 "hump" — vẫn khớp `strcpy`, không chỉ riêng dạng `Strcpy` hoa mỗi
+chữ đầu); biên phải là end-of-string/chữ hoa tiếp theo (hump mới)/ký tự
+không phải chữ-số. Token danh sách sink giữ nguyên, không cần viết thêm bản
+viết hoa riêng.
+
+Regex engine của tree-sitter `#match?` hỗ trợ lookahead và scoped
+case-insensitive group `(?i:...)` — đã kiểm chứng thực nghiệm bằng chính
+`tree_sitter` binding của dự án (Python `Query`/`QueryCursor` thật, không
+chỉ đọc tài liệu) trước khi viết vào rule.
+
+**Kết quả kiểm chứng:** Bắt được `mpackMemcpy`, `safeStrCpy`,
+`MemcpyWrapper`, `wrapper_Strcpy` (mix underscore + camelCase). KHÔNG match
+nhầm `mallocator`, `freetype_init`, `somestrcpycall` (toàn chữ thường,
+không có điểm chuyển hoa nào để nhánh camelCase bắt, không có `_` để nhánh
+snake_case bắt), `myStructCpy` (không chứa chuỗi con `strcpy` liền mạch —
+`Struct` ≠ `Str`+`cpy`), hay `XStrcpy` (chữ hoa liền trước, không phải ranh
+giới từ hợp lệ). Test hồi quy trong `tests/unit/test_parsers.py`
+(`test_parse_file_detects_camelcase_wrapper_function_names`) và xác nhận
+tổng số candidate quét trên `samples/` không giảm so với trước khi vá
+(`tests/integration/test_pipeline.py`).
+
 **Giới hạn còn lại (không giải quyết được bằng regex theo tên):** Wrapper
-đặt tên **hoàn toàn không chứa** tên sink gốc như một thành phần (vd.
-`safeCopy` không chứa `strcpy`/`memcpy` dưới bất kỳ dạng nào, hoặc quy ước
-đặt tên không dùng underscore như `mpackMemcpy` theo camelCase) vẫn sẽ bị bỏ
-sót — đây là giới hạn cố hữu của cách tiếp cận match theo tên định danh, chỉ
-giải quyết được bằng phân tích alias/type thật (ngoài phạm vi Tree-sitter
-query đơn giản ở Layer 2).
+đặt tên **hoàn toàn không chứa** tên sink gốc như một thành phần dưới bất
+kỳ dạng viết hoa/thường/phân tách nào (vd. `safeCopy` không chứa
+`strcpy`/`memcpy` dưới bất kỳ dạng nào) vẫn sẽ bị bỏ sót — đây là giới hạn
+cố hữu của cách tiếp cận match theo tên định danh, chỉ giải quyết được bằng
+phân tích alias/type thật (ngoài phạm vi Tree-sitter query đơn giản ở
+Layer 2).
 
 ## Quy trình cập nhật model
