@@ -21,11 +21,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from vulneracheck.parsers import CandidateSink, TreeSitterEngine
+from vulneracheck.parsers import CandidateSink, LANGUAGE_RULE_MAP, TreeSitterEngine
 from vulneracheck.reporting import (
     Finding,
     LOW_CONFIDENCE_CATEGORY_NOTE,
     LOW_CONFIDENCE_CWE_CATEGORIES,
+    ML_NOT_SUPPORTED_NOTE,
     SarifReport,
     redact_secret,
 )
@@ -51,6 +52,18 @@ _EXTENSION_LANGUAGE_MAP = {
     ".hpp": "cpp",
     ".hh": "cpp",
     ".java": "java",
+}
+
+# Tên hiển thị cho người dùng của language_key (segment đầu trong giá trị
+# LANGUAGE_RULE_MAP — xem parsers/__init__.py) khi build cảnh báo tổng hợp
+# ml_unsupported. Khác _EXTENSION_LANGUAGE_MAP ở trên: map đó chỉ phục vụ
+# Layer 3 (không có "python" vì Layer 3 không hỗ trợ); map này bao phủ MỌI
+# ngôn ngữ Layer 2 hỗ trợ, kể cả ngôn ngữ ngoài phạm vi Layer 3.
+_DISPLAY_LANGUAGE_NAMES = {
+    "python": "Python",
+    "java": "Java",
+    "c": "C",
+    "cpp": "C++",
 }
 
 # Thư mục luôn bị bỏ qua khi duyệt cây thư mục (tên chính xác, không phải pattern).
@@ -119,6 +132,7 @@ class PipelineResult:
     candidate_sinks: list[CandidateSink] = field(default_factory=list)
     verified_findings: list[VerifierResult] = field(default_factory=list)
     report: SarifReport | None = None
+    ml_unsupported_warning: str | None = None
 
 
 def run_secrets_layer(file_path: Path) -> list[SecretFinding]:
@@ -173,6 +187,46 @@ def run_verifier_layer(candidates: list[CandidateSink]) -> list[VerifierResult]:
         for candidate in candidates
     ]
     return verifier.predict_batch(items)
+
+
+def _display_language_name(file_path: str) -> str:
+    """Tên ngôn ngữ để hiển thị cho người dùng, suy ra từ LANGUAGE_RULE_MAP
+    (Layer 2 — phạm vi rộng hơn Layer 3, có cả "python"). Extension không có
+    rule .scm nào (không nên xảy ra ở đây vì chỉ gọi cho candidate đã qua
+    Layer 2) fallback về chính extension."""
+    extension = Path(file_path).suffix
+    rule_file = LANGUAGE_RULE_MAP.get(extension)
+    if rule_file is None:
+        return extension.lstrip(".") or "unknown"
+    language_key = rule_file.split("/", 1)[0]
+    return _DISPLAY_LANGUAGE_NAMES.get(language_key, language_key)
+
+
+def build_ml_unsupported_warning(
+    verified_candidates: list[tuple[CandidateSink, VerifierResult]]
+) -> str | None:
+    """Dựng 1 dòng cảnh báo TỔNG HỢP (không lặp lại mỗi finding) khi có
+    candidate với ml_verified=False — báo cho người dùng biết các finding đó
+    chỉ dựa trên Layer 1+2, chưa qua Layer 3 lọc precision nên độ tin cậy
+    thấp hơn hẳn C/C++/Java.
+
+    Trả về None nếu mọi candidate đều ml_verified=True (không có gì để cảnh
+    báo) — gọi nơi dùng (CLI) chỉ in cảnh báo khi giá trị trả về khác None.
+    """
+    unsupported = [
+        (candidate, result)
+        for candidate, result in verified_candidates
+        if not result.ml_verified
+    ]
+    if not unsupported:
+        return None
+
+    languages = sorted({_display_language_name(candidate.file_path) for candidate, _ in unsupported})
+    return (
+        f"⚠️  {len(unsupported)} candidate từ ngôn ngữ {', '.join(languages)} chưa qua "
+        "xác minh AI (chỉ dựa trên Layer 1+2) — độ tin cậy thấp hơn nhiều so với "
+        "C/C++/Java, cần review thủ công kỹ hơn."
+    )
 
 
 def run_reporting_layer(
@@ -262,7 +316,7 @@ def run_reporting_layer(
                     extra_properties={
                         **base_properties,
                         "ml_verified": False,
-                        "note": "Chưa được ML xác minh, độ tin cậy thấp hơn finding đã qua Layer 3.",
+                        "note": ML_NOT_SUPPORTED_NOTE,
                     },
                 )
             )
@@ -505,6 +559,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineResult:
     result.verified_findings = verifier_results
 
     verified_candidates = list(zip(all_candidates, verifier_results))
+    result.ml_unsupported_warning = build_ml_unsupported_warning(verified_candidates)
     result.report = run_reporting_layer(
         result.secret_findings, verified_candidates, config.output_path
     )

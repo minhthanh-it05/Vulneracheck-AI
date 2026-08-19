@@ -2,6 +2,15 @@
 
 ## Phạm vi ngôn ngữ được hỗ trợ
 
+Model (Layer 3) chỉ hỗ trợ **C, C++, Java** (`SUPPORTED_ML_LANGUAGES` trong
+`verifier/__init__.py`). Layer 2 (rule Tree-sitter) hỗ trợ thêm **Python**
+(`rules/python/python_sinks.scm`) — candidate sink Python vẫn được Layer 1+2
+quét và xuất hiện trong SARIF (`ml_verified=false`, `severity="warning"`,
+kèm `properties.note` giải thích), nhưng KHÔNG được Layer 3 lọc false
+positive, nên độ tin cậy thấp hơn hẳn so với finding C/C++/Java đã qua model.
+CLI in thêm 1 dòng cảnh báo tổng hợp mỗi khi scan có candidate thuộc nhóm
+này (xem `pipeline.build_ml_unsupported_warning`).
+
 ## Dữ liệu huấn luyện
 
 ## Hiệu năng (accuracy, precision, recall, F1)

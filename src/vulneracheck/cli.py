@@ -97,6 +97,8 @@ def scan(target_path: Path | None, diff_range: str | None, output_path: Path) ->
         f"{Fore.GREEN}[VulneraCheck] Quét xong: {len(result.candidate_sinks)} candidate sink, "
         f"{finding_count} finding được báo cáo. SARIF ghi tại: {output_path}{Style.RESET_ALL}"
     )
+    if result.ml_unsupported_warning is not None:
+        click.echo(f"{Fore.YELLOW}[VulneraCheck] {result.ml_unsupported_warning}{Style.RESET_ALL}")
 
 
 if __name__ == "__main__":

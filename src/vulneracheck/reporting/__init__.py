@@ -42,6 +42,18 @@ LOW_CONFIDENCE_CATEGORY_NOTE = (
     "tin thẳng confidence score."
 )
 
+# Giải thích cho finding có ml_verified=False (ngôn ngữ ngoài
+# SUPPORTED_ML_LANGUAGES) — đặt ở đây (không inline trong pipeline.py) để
+# người đọc SARIF trực tiếp (vd. GitHub Security tab, không qua CLI) cũng
+# hiểu được ý nghĩa, không chỉ thấy field "ml_verified": false trơ trọi.
+ML_NOT_SUPPORTED_NOTE = (
+    "Finding này chỉ dựa trên Layer 1 (secret scan) + Layer 2 (rule Tree-sitter) "
+    "— ngôn ngữ của file KHÔNG nằm trong phạm vi hỗ trợ của model AI (Layer 3, "
+    "chỉ hỗ trợ C/C++/Java), nên CHƯA được xác minh để lọc false positive. Độ "
+    "tin cậy thấp hơn nhiều so với finding đã qua Layer 3 — cần review thủ công "
+    "kỹ hơn."
+)
+
 REDACT_VISIBLE_PREFIX = 4
 
 
