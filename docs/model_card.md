@@ -15,6 +15,82 @@ này (xem `pipeline.build_ml_unsupported_warning`).
 
 ## Hiệu năng (accuracy, precision, recall, F1)
 
+### Đánh giá độc lập trên SVEN dataset — 2026-08-19
+
+**Nguồn dữ liệu:** [SVEN dataset trên HuggingFace](https://huggingface.co/datasets/bstee615/sven)
+(repo_id `bstee615/sven`, 803 cặp before/after, kiểm tra thủ công bởi con
+người). **Đây KHÔNG phải test set gốc lúc train model** (test.csv gốc lưu
+trên Google Drive đã không còn truy cập được, không khôi phục lại được) —
+SVEN được chọn thay thế vì là dataset ĐỘC LẬP, CHƯA TỪNG được dùng ở bất kỳ
+bước nào trong pipeline train model này (không có rủi ro data leakage). Quy
+trình đầy đủ, chạy lại được qua `scripts/evaluate_sven.py`:
+
+1. Tải cả 2 split (train 720 + val 83 = 803 dòng) trực tiếp từ HuggingFace
+   Hub.
+2. Lọc chỉ giữ dòng có `file_name` đuôi C/C++ (Python nằm ngoài phạm vi
+   model — xem mục "Phạm vi ngôn ngữ được hỗ trợ"); loại 381 dòng ngoài
+   C/C++ và 4 cặp before/after thoái hoá (rỗng hoặc giống hệt nhau).
+3. Dựng tập test nhị phân: `func_src_before` → label=1 (có lỗi),
+   `func_src_after` → label=0 (đã fix) — 836 example, đã cân bằng sẵn 50/50
+   theo từng ngôn ngữ nhờ cấu trúc cặp 1-1 (c: 362/362, cpp: 56/56).
+4. Chạy `ONNXVerifier.predict_batch()` với model + threshold **giữ nguyên
+   trạng** tại `weights/model.onnx` + `weights/threshold_config.json` —
+   KHÔNG train lại, KHÔNG hiệu chỉnh/re-calibrate threshold ở bước này.
+
+**Kết quả:**
+
+| Ngôn ngữ | n | TP | FP | TN | FN | Accuracy | Precision | Recall | F1 |
+|---|---|---|---|---|---|---|---|---|---|
+| C | 724 | 283 | 285 | 77 | 79 | 0.4972 | 0.4982 | 0.7818 | 0.6086 |
+| C++ | 112 | 55 | 54 | 2 | 1 | 0.5089 | 0.5046 | 0.9821 | 0.6667 |
+| **Tổng hợp C+C++** | **836** | **338** | **339** | **79** | **80** | **0.4988** | **0.4993** | **0.8086** | **0.6174** |
+
+**Diễn giải:** Recall cao (78-98%) — model hiếm khi bỏ sót lỗi thật. Nhưng
+precision xấp xỉ 50% (gần tương đương đoán ngẫu nhiên) ở CẢ HAI ngôn ngữ,
+đặc biệt C++ gần như luôn đoán label=1 (TN chỉ 2/56, tức gần như mọi hàm ĐÃ
+FIX vẫn bị gán "có lỗi"). Kết quả này **khớp và định lượng ở quy mô lớn
+hơn nhiều** vấn đề đã ghi nhận ở mục "False positive hệ thống trên họ hàm
+buffer/format an toàn (C/C++)" bên dưới (trước đó chỉ có 9 sample tự viết +
+13 sample từ `sds` — ở đây là 836 example từ nguồn độc lập, đa dạng, do con
+người gán nhãn). Kết luận không đổi: model hiện tại rất tốt để KHÔNG bỏ sót
+(high recall), nhưng lọc false positive (mục tiêu chính của Layer 3 trong
+cascade) hiệu quả gần như bằng 0 trên C/C++ với threshold hiện tại.
+
+**Java:** chưa có bộ đánh giá độc lập cục bộ cho ngôn ngữ này ở bước này —
+SVEN không có đủ dữ liệu Java sạch để tách riêng, KHÔNG bịa số liệu. Cần bộ
+dữ liệu Java độc lập riêng cho lần đánh giá sau.
+
+#### Đối chiếu số liệu
+
+Số liệu nội bộ đo được lúc train trước đây (ước tính ~89-91% cho C, sau khi
+trừ ảnh hưởng leakage) và số liệu SVEN đo được ở trên (~50%, xấp xỉ mức đoán
+ngẫu nhiên) chênh lệch rất lớn — cần nói rõ vì sao và nên tin số nào.
+
+**Nguyên nhân chênh lệch:** con số "~89-91%" trước đó **không phải đo trực
+tiếp** trên một test set sạch — đó là **suy luận gián tiếp**, dựa trên giả
+định đơn giản hoá từ tỷ lệ leakage (trùng lặp/gần-trùng-lặp giữa train và
+test) đo được lúc đó, rồi ước tính ngược lại hiệu năng "nếu không có
+leakage" sẽ khoảng bao nhiêu. Đây là một phép ước lượng gián tiếp, không
+phải kết quả thực đo trên dữ liệu mà model chưa từng thấy dưới bất kỳ hình
+thức nào. Ngược lại, số liệu SVEN ở trên là **bằng chứng thực đo** — chạy
+inference thật, trên nguồn dữ liệu hoàn toàn độc lập (chưa từng xuất hiện ở
+bất kỳ bước nào trong pipeline train), do con người gán nhãn thủ công.
+
+**Kết luận:** SỐ LIỆU SVEN (~50% precision) NÊN ĐƯỢC COI LÀ ĐẠI DIỆN THẬT
+HƠN cho khả năng tổng quát hoá của model trên code chưa từng thấy, so với
+con số nội bộ ~89-91% — con số nội bộ có nguy cơ bị thổi phồng bởi
+gần-trùng-lặp giữa train/test lấy cùng nguồn (cùng phong cách code, cùng
+project, đôi khi cùng hàm chỉ khác vài dòng), khiến model "nhớ" thay vì
+thực sự học được ranh giới an toàn/có lỗi.
+
+**Hàm ý thực tế:** với precision ~50% trên C/C++ ở trạng thái hiện tại,
+**KHÔNG NÊN dùng Layer 3 làm căn cứ để ra quyết định tự động** (vd. tự động
+block PR chỉ vì Layer 3 gán label=1) — làm vậy sẽ chặn nhầm khoảng một nửa
+số PR sạch. Layer 3 chỉ nên được dùng đúng vai trò đã thiết kế trong cascade
+3 lớp: một **tín hiệu ưu tiên hoá cho review thủ công** (giúp người review
+biết nên nhìn kỹ finding nào trước), không phải một bộ lọc tự động đáng tin
+cậy ở ngưỡng hiện tại.
+
 ### Kiểm thử trên CVE thật — 2026-08-18
 
 Lần đầu tiên có bằng chứng thực nghiệm trên lỗ hổng đã công bố (CVE), thay vì
