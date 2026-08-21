@@ -1,19 +1,20 @@
 """
-Unit tests cho vulneracheck.server (HTTP server tối giản giữ model sống
-giữa nhiều lần scan — xem module docstring trong server.py).
+Unit tests for vulneracheck.server (the minimal HTTP server that keeps the
+model alive across scans — see the module docstring in server.py).
 
-Khởi động server THẬT trong thread nền, dùng port do OS tự cấp (port=0,
-đọc lại qua httpd.server_address) để tránh xung đột cổng giữa các lần chạy
-test. Gọi HTTP request thật (http.client, thư viện chuẩn) tới server đó —
-không mock tầng HTTP.
+Starts a REAL server in a background thread, using an OS-assigned port
+(port=0, read back via httpd.server_address) to avoid port conflicts
+between test runs. Makes real HTTP requests (http.client, standard
+library) to that server — the HTTP layer is not mocked.
 
-`run_pipeline` (import vào server.py từ vulneracheck.pipeline) được
-monkeypatch ở 2 test cần kiểm tra nội dung response/lỗi pipeline — tránh
-phải load model ONNX thật, theo đúng tinh thần requires_model đã dùng ở
-tests/integration/test_pipeline.py và tests/unit/test_verifier.py (skip khi
-chưa có model thật), chỉ khác là ở đây ta thay hẳn bằng fake thay vì skip,
-vì mục tiêu là test hành vi HTTP/error-handling của server, không phải
-pipeline thật.
+`run_pipeline` (imported into server.py from vulneracheck.pipeline) is
+monkeypatched in the 2 tests that need to check response content/pipeline
+errors — to avoid needing to load the real ONNX model, following the same
+spirit as the requires_model pattern used in
+tests/integration/test_pipeline.py and tests/unit/test_verifier.py (skips
+when there's no real model), just replaced entirely with a fake here
+instead of a skip, since the goal here is to test the server's HTTP/
+error-handling behavior, not the real pipeline.
 """
 
 from __future__ import annotations
@@ -114,7 +115,7 @@ def test_scan_success_returns_sarif_and_counts(running_server, monkeypatch) -> N
             findings=[
                 Finding(
                     rule_id="sink/strcpy",
-                    message="Candidate sink 'strcpy' — model xác nhận CÓ LỖI.",
+                    message="Candidate sink 'strcpy' — the model confirms it is VULNERABLE.",
                     file_path="app.c",
                     start_line=1,
                     severity="error",
@@ -146,41 +147,42 @@ def test_scan_pipeline_runtime_error_returns_400_with_message(running_server, mo
     host, port = running_server
 
     def fake_run_pipeline(config):
-        raise RuntimeError("ref không tồn tại trong repo")
+        raise RuntimeError("ref does not exist in repo")
 
     monkeypatch.setattr(server_module, "run_pipeline", fake_run_pipeline)
 
     status, data = _post(host, port, "/scan", json.dumps({"diff_range": "bad..ref"}).encode())
 
     assert status == 400
-    assert "ref không tồn tại" in data["error"]
+    assert "ref does not exist" in data["error"]
 
 
 def test_scan_pipeline_unexpected_error_returns_500_with_message(running_server, monkeypatch) -> None:
     host, port = running_server
 
     def fake_run_pipeline(config):
-        raise TypeError("model không tải được")
+        raise TypeError("model failed to load")
 
     monkeypatch.setattr(server_module, "run_pipeline", fake_run_pipeline)
 
     status, data = _post(host, port, "/scan", json.dumps({"target_path": "app.c"}).encode())
 
     assert status == 500
-    assert "model không tải được" in data["error"]
+    assert "model failed to load" in data["error"]
 
 
 def test_scan_does_not_leave_sarif_file_on_disk(running_server, monkeypatch, tmp_path) -> None:
-    # /scan không được tự ghi file SARIF ra đĩa — dùng thư mục temp tự xoá
-    # (xem docstring server.py). Kiểm tra bằng cách theo dõi output_path mà
-    # ScanRequestHandler truyền cho PipelineConfig và xác nhận nó KHÔNG còn
-    # tồn tại sau khi response đã trả về.
+    # /scan must not write a SARIF file to disk itself — uses a temp
+    # directory that auto-deletes (see the server.py docstring). Checked by
+    # tracking the output_path that ScanRequestHandler passes to
+    # PipelineConfig and confirming it no longer exists once the response
+    # has been returned.
     host, port = running_server
     observed_output_paths = []
 
     def fake_run_pipeline(config):
         observed_output_paths.append(config.output_path)
-        config.output_path.write_text("{}", encoding="utf-8")  # mô phỏng run_reporting_layer thật
+        config.output_path.write_text("{}", encoding="utf-8")  # simulates the real run_reporting_layer
         return PipelineResult(report=SarifReport())
 
     monkeypatch.setattr(server_module, "run_pipeline", fake_run_pipeline)

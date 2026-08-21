@@ -1,7 +1,7 @@
 """
-Unit tests cho vulneracheck.secrets (Layer 1: regex/pattern matching).
+Unit tests for vulneracheck.secrets (Layer 1: regex/pattern matching).
 
-Fixture: dùng file mẫu trong samples/vulnerable và samples/safe.
+Fixtures: use sample files in samples/vulnerable and samples/safe.
 """
 
 from __future__ import annotations
@@ -45,12 +45,12 @@ def test_load_safe_sample(safe_sample_path: Path) -> None:
 
 
 def test_scan_vulnerable_sample_runs(vulnerable_sample_path: Path) -> None:
-    # TODO: assert rằng finding hardcoded API key được phát hiện đúng.
+    # TODO: assert that the hardcoded API key finding is detected correctly.
     findings = scan_file(str(vulnerable_sample_path))
     assert isinstance(findings, list)
 
 
 def test_scan_safe_sample_runs(safe_sample_path: Path) -> None:
-    # TODO: assert rằng không có false positive trên sample an toàn.
+    # TODO: assert that there is no false positive on the safe sample.
     findings = scan_file(str(safe_sample_path))
     assert isinstance(findings, list)

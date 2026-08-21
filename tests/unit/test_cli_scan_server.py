@@ -1,18 +1,19 @@
 """
-Unit tests cho `vulneracheck scan --server host:port` (xem cli.py) — 3 hành
-vi cần phân biệt đúng:
-    1. Server không kết nối được (chưa chạy/refused/timeout) -> fallback về
-       chạy pipeline trực tiếp trong tiến trình CLI, KHÔNG lỗi ra ngoài.
-    2. Server chạy thật và trả kết quả -> CLI dùng thẳng kết quả đó, tự ghi
-       file --output cục bộ (server không ghi file), KHÔNG chạy pipeline
-       cục bộ.
-    3. Server chạy thật nhưng pipeline báo lỗi thật (vd. ref git sai) ->
-       báo đúng lỗi đó + exit code khác 0, KHÔNG fallback (khác hẳn case 1).
+Unit tests for `vulneracheck scan --server host:port` (see cli.py) — 3
+behaviors that must be correctly distinguished:
+    1. Server unreachable (not running/refused/timeout) -> falls back to
+       running the pipeline directly in the CLI process, NO error surfaced.
+    2. Server is running for real and returns a result -> the CLI uses that
+       result directly, writing the --output file locally itself (the
+       server doesn't write a file), does NOT run the pipeline locally.
+    3. Server is running for real but the pipeline reports a real error
+       (e.g. a bad git ref) -> reports that exact error + a non-zero exit
+       code, does NOT fall back (unlike case 1).
 
-`run_pipeline` được monkeypatch cả ở phía "cục bộ" (vulneracheck.cli) lẫn
-phía "server" (vulneracheck.server) để không cần model ONNX thật — theo
-đúng tinh thần requires_model đã dùng ở nơi khác trong tests/, chỉ khác là
-thay bằng fake vì mục tiêu ở đây là hành vi CLI/HTTP, không phải pipeline.
+`run_pipeline` is monkeypatched both on the "local" side (vulneracheck.cli)
+and the "server" side (vulneracheck.server) so no real ONNX model is
+needed — following the same spirit as the requires_model pattern used
+elsewhere in tests/, just replaced with a fake here instead of a skip.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def _fake_pipeline_result(rule_id: str = "sink/strcpy") -> PipelineResult:
             findings=[
                 Finding(
                     rule_id=rule_id,
-                    message="Candidate sink 'strcpy' — model xác nhận CÓ LỖI.",
+                    message="Candidate sink 'strcpy' — the model confirms it is VULNERABLE.",
                     file_path="app.c",
                     start_line=1,
                     severity="error",
@@ -87,9 +88,10 @@ def test_scan_falls_back_to_local_pipeline_when_server_unreachable(
     def fake_run_pipeline(config):
         local_calls.append(config)
         result = _fake_pipeline_result()
-        # run_pipeline() thật luôn ghi SARIF ra config.output_path bên trong
-        # run_reporting_layer() — mô phỏng lại side effect đó ở đây vì
-        # run_pipeline bị monkeypatch hoàn toàn (không gọi report.write()).
+        # The real run_pipeline() always writes the SARIF to
+        # config.output_path inside run_reporting_layer() — replicate that
+        # side effect here since run_pipeline is fully monkeypatched (does
+        # not call report.write()).
         result.report.write(config.output_path)
         return result
 
@@ -103,7 +105,7 @@ def test_scan_falls_back_to_local_pipeline_when_server_unreachable(
     )
 
     assert result.exit_code == 0, result.output
-    assert "Không kết nối được server" in result.output
+    assert "Could not connect to server" in result.output
     assert len(local_calls) == 1
     assert output.exists()
 
@@ -119,7 +121,7 @@ def test_scan_uses_result_from_real_running_server(
         return _fake_pipeline_result(rule_id="sink/from-server")
 
     def fail_if_called_local_run_pipeline(config):
-        raise AssertionError("Không được fallback về pipeline cục bộ khi server chạy thật.")
+        raise AssertionError("Must not fall back to the local pipeline when the server is running for real.")
 
     monkeypatch.setattr(server_module, "run_pipeline", fake_server_run_pipeline)
     monkeypatch.setattr(cli_module, "run_pipeline", fail_if_called_local_run_pipeline)
@@ -131,7 +133,7 @@ def test_scan_uses_result_from_real_running_server(
     )
 
     assert result.exit_code == 0, result.output
-    assert "qua server" in result.output.lower()
+    assert "via server" in result.output.lower()
     assert output.exists()
 
     sarif = json.loads(output.read_text(encoding="utf-8"))
@@ -142,11 +144,11 @@ def test_scan_real_server_error_reports_error_without_fallback(
     running_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_server_run_pipeline(config):
-        raise RuntimeError("ref không tồn tại trong repo")
+        raise RuntimeError("ref does not exist in repo")
 
     def fail_if_called_local_run_pipeline(config):
         raise AssertionError(
-            "Server trả lỗi THẬT (không phải lỗi kết nối) — không được fallback."
+            "The server returned a REAL error (not a connection error) — must not fall back."
         )
 
     monkeypatch.setattr(server_module, "run_pipeline", fake_server_run_pipeline)
@@ -159,6 +161,6 @@ def test_scan_real_server_error_reports_error_without_fallback(
     )
 
     assert result.exit_code != 0
-    assert "ref không tồn tại" in result.output
-    # Phải KHÔNG chứa thông điệp fallback — đây là lỗi thật, không phải mất kết nối.
-    assert "Không kết nối được server" not in result.output
+    assert "ref does not exist" in result.output
+    # Must NOT contain the fallback message — this is a real error, not a lost connection.
+    assert "Could not connect to server" not in result.output

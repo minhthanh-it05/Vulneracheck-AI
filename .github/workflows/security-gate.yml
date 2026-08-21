@@ -19,9 +19,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # fetch-depth: 0 = full history. Cần thiết cho --diff (git diff
-          # giữa PR base SHA và head SHA) — mặc định GitHub Actions chỉ
-          # checkout shallow clone (depth 1), không đủ để git diff tới base.
+          # fetch-depth: 0 = full history. Needed for --diff (git diff
+          # between the PR base SHA and head SHA) — GitHub Actions defaults
+          # to a shallow clone (depth 1), which isn't enough to diff against base.
           fetch-depth: 0
 
       - name: Set up Python
@@ -43,7 +43,7 @@ jobs:
             vulneracheck scan --path . --output vulneracheck-report.sarif.json
           fi
           if [ -f vulneracheck-report.sarif.json ] && grep -q '"status": "partial"' vulneracheck-report.sarif.json; then
-            echo "::warning::Pipeline chua implement day du - day KHONG phai ket qua quet bao mat that, chi la placeholder."
+            echo "::warning::Pipeline is not fully implemented yet - this is NOT a real security scan result, just a placeholder."
           fi
 
       - name: Upload SARIF report

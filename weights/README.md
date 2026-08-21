@@ -1,22 +1,23 @@
 # weights/
 
-Thư mục này chứa artifact của model GraphCodeBERT (Layer 3 — verifier) dùng để
-phân loại nhị phân an toàn/có lỗi cho các candidate sink do Layer 2 forward tới.
+This directory contains the GraphCodeBERT model artifacts (Layer 3 —
+verifier) used to binary-classify safe/vulnerable candidate sinks forwarded
+by Layer 2.
 
-`model.onnx` được track qua **Git LFS** (xem `.gitattributes` ở root repo:
-`*.onnx filter=lfs diff=lfs merge=lfs -text`) — không phải file bị `.gitignore`
-loại trừ. Cần `git lfs pull` (hoặc clone với `git lfs` đã cài) để lấy được nội
-dung thật của file thay vì chỉ con trỏ LFS.
+`model.onnx` is tracked via **Git LFS** (see `.gitattributes` at the repo
+root: `*.onnx filter=lfs diff=lfs merge=lfs -text`) — it is not a file
+excluded by `.gitignore`. You need `git lfs pull` (or clone with `git lfs`
+already installed) to get the real file content instead of just the LFS pointer.
 
-## Các file thật đang có trong `weights/`
+## Actual files present in `weights/`
 
-| File / thư mục | Mô tả |
+| File / directory | Description |
 |---|---|
-| `model.onnx` | Model GraphCodeBERT (RoBERTa-based) đã fine-tune cho 3 ngôn ngữ C/C++/Java, export sang ONNX, **opset version 14**. Định dạng **FP32** — xem mục "INT8 quantization" bên dưới về lý do không dùng bản quantize. Đã chạy qua `onnxruntime.quantization.shape_inference.quant_pre_process` trước khi verify (bước preprocess chuẩn khuyến nghị của ONNX Runtime, không gây lỗi nên được giữ lại dù không dùng để quantize thành công). |
-| `tokenizer/` | Thư mục tokenizer đầy đủ theo định dạng Hugging Face `transformers`, gồm 5 file: `tokenizer.json`, `tokenizer_config.json`, `vocab.json`, `merges.txt`, `special_tokens_map.json`. Nạp bằng `AutoTokenizer.from_pretrained("weights/tokenizer")`. |
-| `threshold_config.json` | Cấu hình threshold + uncertain-zone đã calibrate, xem chi tiết bên dưới. |
+| `model.onnx` | GraphCodeBERT (RoBERTa-based) model fine-tuned for 3 languages (C/C++/Java), exported to ONNX, **opset version 14**. Format is **FP32** — see the "INT8 quantization" section below for why the quantized version isn't used. Has been run through `onnxruntime.quantization.shape_inference.quant_pre_process` before verification (the standard preprocessing step recommended by ONNX Runtime; kept because it doesn't cause errors, even though it didn't lead to a successful quantization). |
+| `tokenizer/` | Full tokenizer directory in the Hugging Face `transformers` format, containing 5 files: `tokenizer.json`, `tokenizer_config.json`, `vocab.json`, `merges.txt`, `special_tokens_map.json`. Loaded via `AutoTokenizer.from_pretrained("weights/tokenizer")`. |
+| `threshold_config.json` | Calibrated threshold + uncertain-zone configuration, see details below. |
 
-### `threshold_config.json` — cấu trúc và ý nghĩa
+### `threshold_config.json` — structure and meaning
 
 ```json
 {
@@ -29,53 +30,53 @@ dung thật của file thay vì chỉ con trỏ LFS.
 }
 ```
 
-- `thresholds`: **mỗi ngôn ngữ có một ngưỡng quyết định riêng**, không dùng chung một mốc 0.5. Xác suất `P(vulnerable)` do model trả về được so với threshold của đúng ngôn ngữ đó để ra label 0/1. Các threshold này đã được calibrate để đạt `target_recall = 0.92` trên tập dữ liệu đánh giá nội bộ, trong khi giới hạn tỷ lệ finding cần review thủ công ở mức `max_review_pct = 0.25`.
-- `uncertain_zones`: khoảng xác suất mà model không đủ tin cậy để tự động kết luận — nếu `P(vulnerable)` rơi vào khoảng này, `ONNXVerifier` trả về `status="UNCERTAIN_NEEDS_REVIEW"` thay vì `OK`, tức là finding cần con người xem lại thay vì tin tuyệt đối vào label tự động.
+- `thresholds`: **each language has its own decision threshold**, not a shared 0.5 cutoff. The `P(vulnerable)` probability returned by the model is compared against that language's threshold to produce a 0/1 label. These thresholds were calibrated to reach `target_recall = 0.92` on an internal evaluation dataset, while capping the share of findings needing manual review at `max_review_pct = 0.25`.
+- `uncertain_zones`: the probability range where the model isn't confident enough to conclude automatically — if `P(vulnerable)` falls in this range, `ONNXVerifier` returns `status="UNCERTAIN_NEEDS_REVIEW"` instead of `OK`, meaning the finding needs a human to look at it rather than trusting the automatic label outright.
 
 ### INT8 quantization
 
-INT8 quantization đã được thử nhưng bị loại bỏ do sai số (accuracy degradation)
-quá lớn trên attention layer của kiến trúc RoBERTa-based — không đạt độ chính
-xác chấp nhận được để dùng trong production. Vì vậy `model.onnx` hiện tại là
-bản **FP32**, không phải bản quantized. Chi tiết định lượng (nếu có) xem
-`docs/model_card.md`.
+INT8 quantization was attempted but dropped due to accuracy degradation too
+large on the attention layer of the RoBERTa-based architecture — not
+accurate enough to be acceptable for production use. So the current
+`model.onnx` is the **FP32** version, not a quantized one. For quantitative
+details (if any), see `docs/model_card.md`.
 
-## Phạm vi hỗ trợ
+## Supported scope
 
-Model **chỉ hỗ trợ 3 ngôn ngữ: C, C++, Java** (`SUPPORTED_ML_LANGUAGES` trong
-`src/vulneracheck/verifier/__init__.py`). Với ngôn ngữ khác, `ONNXVerifier.predict()`
-/ `predict_batch()` **không raise lỗi** — trả về `VerifierResult(ml_verified=False,
-confidence=None, label=None, status="ML_NOT_SUPPORTED")` để pipeline có thể tiếp
-tục xử lý các candidate còn lại một cách bình thường.
+The model **only supports 3 languages: C, C++, Java** (`SUPPORTED_ML_LANGUAGES` in
+`src/vulneracheck/verifier/__init__.py`). For other languages, `ONNXVerifier.predict()`
+/ `predict_batch()` **do not raise an error** — they return `VerifierResult(ml_verified=False,
+confidence=None, label=None, status="ML_NOT_SUPPORTED")` so the pipeline can
+continue processing the remaining candidates normally.
 
 ## Known Limitations
 
-- **Chưa test trên PR/repo thật** — mới chỉ test trên tập test nội bộ (sample nhỏ
-  tự viết trong `samples/`), chưa chạy end-to-end trên một pull request hay
-  repository thực tế nào.
-- **Java có độ phân tách (separation) kém hơn C/C++** — suy luận gián tiếp từ
-  việc threshold của Java phải hạ rất sâu (0.05, so với 0.6 của C) mới đạt đủ
-  `target_recall = 0.92`, cho thấy phân bố xác suất của model trên Java lệch xa
-  mốc tự nhiên 0.5 hơn C/C++.
-- **Nguy cơ distribution shift** giữa dữ liệu train (function/sample đã được
-  curate) và dữ liệu Layer 2 sẽ forward trong thực tế (snippet cắt quanh sink,
-  ngữ cảnh cụt hơn, độ dài/style khác) — chưa có cách đo trực tiếp rủi ro này
-  cho tới khi chạy trên dữ liệu thật.
-- **Số liệu benchmark chi tiết (accuracy/precision/recall/F1)** — xem mục
-  "Đánh giá độc lập trên SVEN dataset" trong `docs/model_card.md` (không lặp
-  lại số liệu ở đây để tránh 2 nguồn lệch nhau theo thời gian). Tóm tắt kết
-  luận: precision ~50% trên C/C++ khi đo độc lập — thấp hơn nhiều so với ước
-  tính nội bộ lúc train.
+- **Not yet tested on a real PR/repo** — only tested on the internal test
+  set so far (small hand-written samples in `samples/`), not yet run
+  end-to-end on any real pull request or repository.
+- **Java has worse separation than C/C++** — inferred indirectly from the
+  fact that Java's threshold has to be lowered very deep (0.05, vs. 0.6 for
+  C) to reach `target_recall = 0.92`, suggesting the model's probability
+  distribution on Java is shifted much further from the natural 0.5 mark than C/C++.
+- **Risk of distribution shift** between the training data (curated
+  functions/samples) and the data Layer 2 will forward in practice (a
+  snippet cut around the sink, shorter context, different length/style) —
+  there's no way to measure this risk directly until it's run on real data.
+- **Detailed benchmark numbers (accuracy/precision/recall/F1)** — see the
+  "Independent evaluation on the SVEN dataset" section in
+  `docs/model_card.md` (not repeated here, to avoid the two sources
+  drifting apart over time). Summary conclusion: ~50% precision on C/C++
+  when measured independently — much lower than the internal estimate made at training time.
 
-## Quy trình lấy model từ Google Colab
+## Process for getting the model from Google Colab
 
-1. Huấn luyện / fine-tune GraphCodeBERT trên Google Colab (GPU runtime).
-2. Export sang ONNX (opset 14).
-3. Chạy `onnxruntime.quantization.shape_inference.quant_pre_process` để preprocess
-   model trước khi verify.
-4. (Đã thử, không dùng) Quantize INT8 — bị loại vì sai số quá lớn, xem mục
-   "INT8 quantization" ở trên. Sản phẩm cuối cùng dùng thẳng bản FP32 sau bước 3.
-5. Tải về máy local và đặt vào `weights/` đúng layout hiện tại:
+1. Train / fine-tune GraphCodeBERT on Google Colab (GPU runtime).
+2. Export to ONNX (opset 14).
+3. Run `onnxruntime.quantization.shape_inference.quant_pre_process` to
+   preprocess the model before verifying.
+4. (Tried, not used) Quantize to INT8 — dropped due to too large an error,
+   see the "INT8 quantization" section above. The final product uses the FP32 version straight after step 3.
+5. Download to the local machine and place it into `weights/` matching the current layout:
    ```
    weights/
    ├── README.md
@@ -89,9 +90,10 @@ tục xử lý các candidate còn lại một cách bình thường.
        └── special_tokens_map.json
    ```
 
-## Lưu ý
+## Note
 
-- `src/vulneracheck/verifier/__init__.py` tự động trỏ tới `weights/model.onnx`,
-  `weights/tokenizer`, `weights/threshold_config.json` (`DEFAULT_MODEL_PATH`,
-  `DEFAULT_TOKENIZER_PATH`, `DEFAULT_THRESHOLD_CONFIG_PATH`). Nếu đổi vị trí/tên
-  file, cập nhật các hằng số này.
+- `src/vulneracheck/verifier/__init__.py` automatically points to
+  `weights/model.onnx`, `weights/tokenizer`, `weights/threshold_config.json`
+  (`DEFAULT_MODEL_PATH`, `DEFAULT_TOKENIZER_PATH`,
+  `DEFAULT_THRESHOLD_CONFIG_PATH`). If you move/rename these files, update
+  these constants accordingly.

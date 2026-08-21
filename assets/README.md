@@ -1,8 +1,8 @@
 # assets/
 
-Chứa sơ đồ kiến trúc (architecture diagrams), hình ảnh minh hoạ pipeline,
-và các asset trực quan khác dùng trong tài liệu dự án (README, docs).
+Contains architecture diagrams, pipeline illustrations, and other visual
+assets used in project documentation (README, docs).
 
-Gợi ý đặt tên file:
-- `architecture-overview.png` — sơ đồ tổng quan pipeline (parser → verifier → reporting)
-- `pipeline-flow.svg` — luồng xử lý chi tiết từng bước scan
+Suggested file naming:
+- `architecture-overview.png` — high-level pipeline diagram (parser → verifier → reporting)
+- `pipeline-flow.svg` — detailed step-by-step scan flow

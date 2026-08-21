@@ -1,7 +1,7 @@
 """
-reporting: Module xuất báo cáo kết quả scan theo chuẩn SARIF 2.1.0
-(Static Analysis Results Interchange Format), dùng để tích hợp với
-GitHub Code Scanning, VS Code, và các công cụ CI/CD khác.
+reporting: Module for exporting scan results as a SARIF 2.1.0
+(Static Analysis Results Interchange Format) report, used to integrate
+with GitHub Code Scanning, VS Code, and other CI/CD tools.
 """
 
 from __future__ import annotations
@@ -16,15 +16,17 @@ SARIF_SCHEMA = (
 )
 TOOL_NAME = "VulneraCheck-AI"
 
-# Nhóm CWE đã xác nhận verifier (Layer 3) có tỷ lệ false positive hệ thống
-# cao trên C/C++ (9/9 sample an toàn dùng đúng cách vẫn bị flag confidence
-# 0.69-0.97) — xem docs/model_card.md, mục "False positive hệ thống trên họ
-# hàm buffer/format an toàn (C/C++)". Buffer-copy (CWE-120, CWE-787, CWE-125),
-# memory-unsafe (CWE-119, CWE-416, CWE-476), format-string (CWE-134).
-# KHÔNG bao gồm command injection (CWE-78, CWE-88) hay double-free/UAF thuần
-# qua delete (CWE-416/CWE-476 khi đứng riêng ở nhóm delete, không phải nhóm
-# này) — 2 nhóm đó KHÔNG bị vấn đề tương tự, ngược lại cải thiện tốt sau khi
-# mở rộng snippet. Dễ chỉnh sửa khi có thêm bằng chứng cho nhóm sink khác.
+# CWE group confirmed to have a systematically high false positive rate from
+# the verifier (Layer 3) on C/C++ (9/9 correctly-used safe samples were
+# still flagged with confidence 0.69-0.97) — see docs/model_card.md,
+# section "Systematic false positives on safe buffer/format functions
+# (C/C++)". Buffer-copy (CWE-120, CWE-787, CWE-125), memory-unsafe
+# (CWE-119, CWE-416, CWE-476), format-string (CWE-134).
+# Does NOT include command injection (CWE-78, CWE-88) or pure double-free/UAF
+# via delete (CWE-416/CWE-476 when belonging to the delete group specifically,
+# not this group) — those 2 groups do NOT have the same issue, and actually
+# improved well after the snippet was extended. Easy to adjust as more
+# evidence comes in for other sink groups.
 LOW_CONFIDENCE_CWE_CATEGORIES = [
     "CWE-120",
     "CWE-787",
@@ -36,34 +38,36 @@ LOW_CONFIDENCE_CWE_CATEGORIES = [
 ]
 
 LOW_CONFIDENCE_CATEGORY_NOTE = (
-    "Model verification cho nhóm sink buffer/format C/C++ đã ghi nhận tỷ lệ "
-    "false positive cao trong kiểm thử nội bộ (9/9 sample an toàn bị flag "
-    "sai) — xem docs/model_card.md. Cần review thủ công kỹ hơn, không nên "
-    "tin thẳng confidence score."
+    "Model verification for the C/C++ buffer/format sink group has "
+    "recorded a high false positive rate in internal testing (9/9 safe "
+    "samples were flagged incorrectly) — see docs/model_card.md. Needs "
+    "closer manual review; do not trust the confidence score directly."
 )
 
-# Giải thích cho finding có ml_verified=False (ngôn ngữ ngoài
-# SUPPORTED_ML_LANGUAGES) — đặt ở đây (không inline trong pipeline.py) để
-# người đọc SARIF trực tiếp (vd. GitHub Security tab, không qua CLI) cũng
-# hiểu được ý nghĩa, không chỉ thấy field "ml_verified": false trơ trọi.
+# Explanation for a finding with ml_verified=False (language outside
+# SUPPORTED_ML_LANGUAGES) — placed here (not inlined in pipeline.py) so
+# that someone reading the SARIF directly (e.g. GitHub Security tab, not
+# through the CLI) also understands the meaning, not just a bare
+# "ml_verified": false field.
 ML_NOT_SUPPORTED_NOTE = (
-    "Finding này chỉ dựa trên Layer 1 (secret scan) + Layer 2 (rule Tree-sitter) "
-    "— ngôn ngữ của file KHÔNG nằm trong phạm vi hỗ trợ của model AI (Layer 3, "
-    "chỉ hỗ trợ C/C++/Java), nên CHƯA được xác minh để lọc false positive. Độ "
-    "tin cậy thấp hơn nhiều so với finding đã qua Layer 3 — cần review thủ công "
-    "kỹ hơn."
+    "This finding is based only on Layer 1 (secret scan) + Layer 2 (Tree-sitter "
+    "rule) — the file's language is NOT within the AI model's supported scope "
+    "(Layer 3, C/C++/Java only), so it has NOT been verified to filter out "
+    "false positives. Confidence is much lower than a finding that went "
+    "through Layer 3 — needs closer manual review."
 )
 
 REDACT_VISIBLE_PREFIX = 4
 
 
 def redact_secret(matched_text: str, visible_prefix: int = REDACT_VISIBLE_PREFIX) -> str:
-    """Che giá trị secret thật trước khi đưa vào output công khai (SARIF, PR
-    comment). Chỉ giữ lại `visible_prefix` ký tự đầu, phần còn lại thay bằng
-    "****(N more chars)". Vd: "AKIAIOSFODNN7EXAMPLE" -> "AKIA****(16 more chars)".
+    """Mask the real secret value before it goes into public output (SARIF, PR
+    comment). Keeps only the first `visible_prefix` characters, replacing the
+    rest with "****(N more chars)". E.g.: "AKIAIOSFODNN7EXAMPLE" -> "AKIA****(16 more chars)".
 
-    Chuỗi ngắn hơn hoặc bằng visible_prefix bị che hoàn toàn (không lộ ký tự
-    nào) để tránh trường hợp secret ngắn bị lộ hết qua "phần hiện".
+    A string shorter than or equal to visible_prefix is fully masked (no
+    characters revealed) to avoid a short secret being fully exposed through
+    the "visible part".
     """
     if len(matched_text) <= visible_prefix:
         return "*" * len(matched_text)

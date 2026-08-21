@@ -1,124 +1,132 @@
 ; Tree-sitter query: dangerous sinks in C++ source
-; High-recall: chỉ match tên hàm gọi, KHÔNG cố phân tích context/đã sanitize
-; hay chưa — việc đó để Layer 3 (verifier) quyết định.
+; High-recall: only matches the called function's name, does NOT try to
+; analyze whether the context is already sanitized — that's Layer 3's
+; (verifier) decision.
 ;
-; Tách riêng khỏi rules/c/c_sinks.scm vì grammar C++ có thêm delete/delete[]
-; (không tồn tại trong grammar C) và namespace-qualified call (vd. std::system)
-; mà grammar C không có.
+; Kept separate from rules/c/c_sinks.scm because the C++ grammar adds
+; delete/delete[] (not present in the C grammar) and namespace-qualified
+; calls (e.g. std::system), which the C grammar doesn't have.
 ;
-; Mỗi nhóm 1/2/3 có 2 pattern song song: gọi trực tiếp (vd. strcpy(...)) và
-; gọi qua namespace-qualified (vd. std::strcpy(...)) — code C++ hiện đại rất
-; hay gọi tường minh qua std::, cả 2 dạng đều phải được forward lên Layer 3.
+; Groups 1/2/3 each have 2 parallel patterns: a direct call (e.g.
+; strcpy(...)) and a namespace-qualified call (e.g. std::strcpy(...)) —
+; modern C++ code very often calls explicitly through std::, and both forms
+; must be forwarded to Layer 3.
 ;
-; Mỗi #match? predicate có 2 nhánh nối bằng "|", cùng phục vụ mục tiêu bắt
-; wrapper function tự định nghĩa bọc quanh hàm libc gốc (phát hiện qua thực
-; nghiệm trên mpack — dùng mpack_memcpy thay vì memcpy trực tiếp, Layer 2 cũ
-; bỏ sót hoàn toàn):
+; Each #match? predicate has 2 branches joined by "|", both serving the
+; goal of catching self-defined wrapper functions around the original libc
+; function (discovered experimentally on mpack — using mpack_memcpy instead
+; of memcpy directly, the old Layer 2 missed it completely):
 ;
-;   1. "(^|_)(...)($|_)" — dạng snake_case: yêu cầu tên sink là 1 thành phần
-;      tách biệt bằng underscore (đầu/cuối chuỗi hoặc liền kề "_"). Bắt
-;      mpack_memcpy, safe_strcpy, my_malloc_wrapper.
-;   2. "(^|[a-z0-9_])(?=[A-Z])(?i:...)($|[A-Z]|[^a-zA-Z0-9])" — dạng
-;      camelCase/PascalCase: biên trái là start-of-string/chữ thường/số/"_"
-;      (không phải chữ hoa — tránh dính 2 chữ hoa liền kề kiểu viết tắt, vd.
-;      "XStrcpy"), NGAY SAU biên trái phải là 1 chữ hoa (lookahead
-;      "(?=[A-Z])" — đúng nghĩa "chữ cái đầu viết hoa ngay sau ranh giới
-;      từ"), rồi so khớp tên sink KHÔNG phân biệt hoa/thường qua "(?i:...)"
-;      (nên "StrCpy" — viết hoa cả 2 "hump" — vẫn khớp "strcpy", không chỉ
-;      riêng dạng "Strcpy" hoa mỗi chữ đầu), biên phải là end-of-string/chữ
-;      hoa tiếp theo (hump mới)/ký tự không phải chữ-số. Bắt mpackMemcpy,
-;      safeStrCpy, MemcpyWrapper — xem docs/model_card.md mục "False-negative
-;      gap ở Layer 2" để biết thực nghiệm và giới hạn còn lại (wrapper không
-;      chứa tên sink gốc dưới bất kỳ dạng nào, vd. "safeCopy", vẫn bị bỏ sót
-;      — giới hạn cố hữu của cách tiếp cận match-theo-tên).
+;   1. "(^|_)(...)($|_)" — snake_case form: requires the sink name to be a
+;      component separated by an underscore (at the start/end of the string
+;      or adjacent to "_"). Catches mpack_memcpy, safe_strcpy, my_malloc_wrapper.
+;   2. "(^|[a-z0-9_])(?=[A-Z])(?i:...)($|[A-Z]|[^a-zA-Z0-9])" — camelCase/
+;      PascalCase form: the left boundary is start-of-string/lowercase
+;      letter/digit/"_" (not an uppercase letter — avoids matching 2
+;      adjacent uppercase letters like an acronym, e.g. "XStrcpy"),
+;      IMMEDIATELY AFTER the left boundary must be an uppercase letter
+;      (lookahead "(?=[A-Z])" — precisely meaning "the first letter is
+;      uppercase, right after a word boundary"), then case-insensitively
+;      matches the sink name via "(?i:...)" (so "StrCpy" — both "humps"
+;      capitalized — still matches "strcpy", not just the "Strcpy" form
+;      with only the first letter capitalized); the right boundary is
+;      end-of-string/next uppercase letter (a new hump)/a non-alphanumeric
+;      character. Catches mpackMemcpy, safeStrCpy, MemcpyWrapper — see
+;      docs/model_card.md, section "False-negative gap in Layer 2", for the
+;      experiment and the remaining limitation (a wrapper that doesn't
+;      contain the original sink name in any form at all, e.g. "safeCopy",
+;      is still missed — an inherent limitation of the name-matching approach).
 ;
-; Regex engine của tree-sitter #match? hỗ trợ lookahead/lookbehind và scoped
-; case-insensitive group "(?i:...)" — đã kiểm chứng thực nghiệm bằng chính
-; tree_sitter binding của dự án trước khi viết vào đây.
+; Tree-sitter's #match? regex engine supports lookahead/lookbehind and a
+; scoped case-insensitive group "(?i:...)" — verified experimentally using
+; the project's own tree_sitter binding before being written in here.
 ;
-; Cả 2 nhánh: KHÔNG match substring dính liền không có ranh giới (vd.
-; "mallocator", "freetype_init", "somestrcpycall" — toàn chữ thường, không
-; có điểm chuyển hoa nào để nhánh 2 bắt, và không có "_" để nhánh 1 bắt).
-; Đánh đổi: bắt rộng hơn = tăng false positive tiềm năng, chấp nhận được
-; theo triết lý high-recall của Layer 2 (Layer 3 lọc precision sau).
+; Both branches: do NOT match an unrelated adjacent substring with no
+; boundary (e.g. "mallocator", "freetype_init", "somestrcpycall" — all
+; lowercase, with no case-transition point for branch 2 to catch, and no
+; "_" for branch 1 to catch). Trade-off: broader matching = more potential
+; false positives, acceptable per Layer 2's high-recall philosophy
+; throughout the project (Layer 3 filters for precision afterward).
 
-; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — gọi trực tiếp
+; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — direct call
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — qua
-; namespace-qualified call (vd. std::strcpy(...))
+; Buffer overflow / unbounded copy (CWE-120, CWE-787, CWE-125) — via
+; namespace-qualified call (e.g. std::strcpy(...))
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — gọi trực tiếp
+; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — direct call
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — qua
-; namespace-qualified call (vd. std::memcpy(...))
+; Memory-unsafe operations (CWE-119, CWE-416, CWE-476) — via
+; namespace-qualified call (e.g. std::memcpy(...))
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; delete / delete[] (CWE-416, CWE-476) — riêng của C++, không có trong C.
-; Không phân biệt object có bị double-free/dangling sau đó hay không. Đây là
-; node kiểu từ khoá (delete_expression), không phải lời gọi hàm theo tên định
-; danh, nên không áp dụng match-theo-tên (snake_case/camelCase) như các nhóm
-; khác — không có khái niệm "wrapper function" cho 1 từ khoá ngôn ngữ.
-; Lưu ý: grammar tree-sitter-cpp không đặt field name cho toán hạng của
-; delete_expression (chỉ là child vị trí), nên capture cả node làm sink.args
-; thay vì trích riêng toán hạng.
+; delete / delete[] (CWE-416, CWE-476) — specific to C++, not present in C.
+; Does not distinguish whether the object is later double-freed/dangling.
+; This is a keyword-type node (delete_expression), not a function call by
+; identifier name, so name-matching (snake_case/camelCase) doesn't apply to
+; it like the other groups — there's no "wrapper function" concept for a
+; language keyword.
+; Note: the tree-sitter-cpp grammar doesn't assign a field name to
+; delete_expression's operand (it's just a positional child), so the whole
+; node is captured as sink.args instead of extracting the operand separately.
 (delete_expression "delete" @sink.name) @sink.args
 
-; Format string (CWE-134) — gọi trực tiếp. Không phân biệt format string có
-; phải literal hay không ở Layer 2 (quá phức tạp cho query đơn giản), để
-; Layer 3 xử lý.
+; Format string (CWE-134) — direct call. Does not distinguish whether the
+; format string is a literal or not (too complex for a simple query), left
+; to Layer 3.
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:printf|fprintf|snprintf|syslog|vfprintf)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; Format string (CWE-134) — qua namespace-qualified call (vd. std::printf(...))
+; Format string (CWE-134) — via namespace-qualified call (e.g. std::printf(...))
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(printf|fprintf|snprintf|syslog|vfprintf)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:printf|fprintf|snprintf|syslog|vfprintf)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; Command/process injection (CWE-78, CWE-88) — gọi trực tiếp (không qua namespace)
+; Command/process injection (CWE-78, CWE-88) — direct call (not through namespace)
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:system|popen|exec|execl|execlp|execle|execv|execvp|execve|ShellExecute[AW]?|CreateProcess[AW]?)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; Command/process injection qua namespace-qualified call (CWE-78, CWE-88) —
-; vd. std::system(...). Không gồm ShellExecute/CreateProcess (Windows API,
-; không thuộc namespace std::) — giữ đúng như thiết kế gốc.
+; Command/process injection via namespace-qualified call (CWE-78, CWE-88) —
+; e.g. std::system(...). Does not include ShellExecute/CreateProcess
+; (Windows API, not in the std:: namespace) — kept as in the original design.
 (call_expression
   function: (qualified_identifier
     name: (identifier) @sink.name)
   arguments: (argument_list) @sink.args
   (#match? @sink.name "(^|_)(system|popen|exec|execl|execlp|execle|execv|execvp|execve)($|_)|(^|[a-z0-9_])(?=[A-Z])(?i:system|popen|exec|execl|execlp|execle|execv|execvp|execve)($|[A-Z]|[^a-zA-Z0-9])"))
 
-; malloc/calloc — nguy cơ integer overflow khi cấp phát bộ nhớ (CWE-190 kết
-; hợp CWE-789). Match TẤT CẢ lời gọi, không lọc theo dạng tham số (literal,
-; biến, hay biểu thức). Đây là quyết định thiết kế có chủ đích, KHÔNG PHẢI
-; thiếu sót: lọc theo argument_list là binary_expression trực tiếp sẽ bỏ sót
-; đúng case nguy hiểm phổ biến nhất — size đã bị taint từ một lời gọi trước
-; đó (vd. `int size = get_user_input(); malloc(size);`), vì đó là một
-; identifier chứ không phải binary_expression ngay trong lời gọi. Tree-sitter
-; query ở Layer 2 không truy vết được taint qua nhiều dòng, nên match rộng
-; theo đúng triết lý high-recall và để Layer 3 quyết định.
+; malloc/calloc — integer overflow risk when allocating memory (CWE-190
+; combined with CWE-789). Matches ALL calls, without filtering by argument
+; form (literal, variable, or expression). This is a deliberate design
+; decision, NOT an oversight: filtering by whether argument_list is
+; directly a binary_expression would miss the most common dangerous case —
+; a size already tainted from an earlier call (e.g. `int size =
+; get_user_input(); malloc(size);`), since that's an identifier, not a
+; binary_expression right in the call. The Tree-sitter query at Layer 2
+; cannot trace taint across multiple lines, so it matches broadly per the
+; high-recall philosophy and lets Layer 3 decide.
 (call_expression
   function: (identifier) @sink.name
   arguments: (argument_list) @sink.args

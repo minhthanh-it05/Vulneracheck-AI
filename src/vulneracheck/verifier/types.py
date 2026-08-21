@@ -1,4 +1,4 @@
-"""Kiểu dữ liệu dùng chung cho verifier (Layer 3)."""
+"""Shared data types for the verifier (Layer 3)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from dataclasses import dataclass
 
 @dataclass
 class VerifierResult:
-    """Kết quả xác minh một candidate sink qua model GraphCodeBERT (ONNX).
+    """Result of verifying a candidate sink through the GraphCodeBERT (ONNX) model.
 
     status:
-        "ML_NOT_SUPPORTED"     — ngôn ngữ không thuộc SUPPORTED_ML_LANGUAGES,
-                                  model không được gọi (ml_verified=False).
-        "OK"                   — xác suất nằm ngoài uncertain_zone của ngôn ngữ.
-        "UNCERTAIN_NEEDS_REVIEW" — xác suất rơi vào uncertain_zone, cần review thủ công.
+        "ML_NOT_SUPPORTED"       — language is not in SUPPORTED_ML_LANGUAGES,
+                                    the model was not called (ml_verified=False).
+        "OK"                     — probability falls outside the language's uncertain_zone.
+        "UNCERTAIN_NEEDS_REVIEW" — probability falls within the uncertain_zone, needs manual review.
     """
 
     ml_verified: bool

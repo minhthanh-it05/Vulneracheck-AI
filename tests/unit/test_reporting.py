@@ -1,6 +1,6 @@
 """
-Unit tests cho vulneracheck.reporting — đặc biệt là redact_secret(), hàm che
-giá trị secret thật trước khi đưa vào SARIF/PR comment công khai.
+Unit tests for vulneracheck.reporting — specifically redact_secret(), the
+function that masks a real secret value before it goes into a public SARIF/PR comment.
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ def test_redact_secret_custom_visible_prefix() -> None:
 
 
 def test_redact_secret_short_string_fully_hidden() -> None:
-    # Chuỗi ngắn hơn hoặc bằng visible_prefix phải bị che HOÀN TOÀN,
-    # không được lộ nguyên văn qua "phần hiện".
+    # A string shorter than or equal to visible_prefix must be FULLY
+    # masked, must not leak verbatim through the "visible part".
     result = redact_secret("abc")
     assert result == "***"
     assert "abc" not in result
@@ -40,16 +40,16 @@ def test_redact_secret_never_leaks_full_original_text() -> None:
 
 
 def test_sarif_report_never_embeds_raw_secret_via_finding_message() -> None:
-    # Kiểm tra tích hợp nhẹ: nếu message được build bằng redact_secret (đúng
-    # cách dùng dự kiến trong run_reporting_layer), secret gốc không xuất
-    # hiện trong SARIF output cuối cùng.
+    # Light integration check: if the message is built using redact_secret
+    # (the expected usage in run_reporting_layer), the original secret
+    # doesn't appear in the final SARIF output.
     secret = "AKIAIOSFODNN7EXAMPLE"
     redacted = redact_secret(secret)
     report = SarifReport()
     report.add(
         Finding(
             rule_id="secret/aws-access-key-id",
-            message=f"Hardcoded secret phát hiện được: {redacted}",
+            message=f"Hardcoded secret detected: {redacted}",
             file_path="app.py",
             start_line=1,
         )

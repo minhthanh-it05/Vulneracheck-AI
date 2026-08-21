@@ -1,36 +1,36 @@
 """
-scripts/evaluate_sven.py: Đánh giá ĐỘC LẬP model ONNX (Layer 3) đã có tại
-weights/model.onnx trên dataset SVEN (HuggingFace: bstee615/sven) — dataset
-này CHƯA TỪNG được dùng ở bất kỳ bước nào trong pipeline train model (không
-có rủi ro data leakage), dùng thay cho test.csv gốc lúc train (đã mất, file
-trên Google Drive không còn truy cập được).
+scripts/evaluate_sven.py: INDEPENDENT evaluation of the ONNX model (Layer 3)
+already at weights/model.onnx on the SVEN dataset (HuggingFace:
+bstee615/sven) — this dataset has NEVER been used at any step in the
+model's training pipeline (no data leakage risk), used as a substitute for
+the original test.csv from training time (lost, the file on Google Drive
+is no longer accessible).
 
-KHÔNG train lại / fit lại / hiệu chỉnh (calibrate) gì ở đây — script này chỉ
-CHẠY INFERENCE model + threshold ĐÃ CÓ (weights/model.onnx +
-weights/threshold_config.json) và đo hiệu năng, không đổi bất kỳ tham số nào
-của model.
+Does NOT retrain / re-fit / re-calibrate anything here — this script only
+RUNS INFERENCE with the model + threshold ALREADY THERE
+(weights/model.onnx + weights/threshold_config.json) and measures
+performance, without changing any of the model's parameters.
 
-Chạy lại:
+To re-run:
     python scripts/evaluate_sven.py
 
-Yêu cầu (KHÔNG phải dependency của package vulneracheck, chỉ cần cho riêng
-script này — không khai báo trong pyproject.toml):
+Requirements (NOT a dependency of the vulneracheck package, only needed for
+this script specifically — not declared in pyproject.toml):
     pip install huggingface_hub pyarrow
 
-Các bước:
-    1. Tải cả 2 split (train + val, tổng 803 dòng) của bstee615/sven từ
-       HuggingFace Hub (cache tự động qua huggingface_hub, lần chạy sau
-       không tải lại).
-    2. Lọc CHỈ giữ dòng có file_name đuôi C/C++ (model không hỗ trợ Python
-       — xem SUPPORTED_ML_LANGUAGES trong vulneracheck.verifier).
-    3. Dựng tập test nhị phân: func_src_before -> label=1 (có lỗi),
-       func_src_after -> label=0 (đã fix). Cân bằng lại 50/50 theo từng
-       ngôn ngữ nếu đếm ra lệch (downsample lớp đa số, seed cố định để tái
-       lập được).
-    4. Chạy ONNXVerifier.predict_batch() — model + threshold ĐÃ CÓ, không
-       đổi gì.
-    5. In accuracy/precision/recall/F1/confusion matrix, TÁCH RIÊNG theo
-       từng ngôn ngữ (c, cpp), kèm tổng hợp C+C++.
+Steps:
+    1. Download both splits (train + val, 803 rows total) of bstee615/sven
+       from HuggingFace Hub (cached automatically via huggingface_hub, not
+       re-downloaded on later runs).
+    2. Filter to ONLY keep rows whose file_name has a C/C++ extension (the
+       model doesn't support Python — see SUPPORTED_ML_LANGUAGES in
+       vulneracheck.verifier).
+    3. Build a binary test set: func_src_before -> label=1 (vulnerable),
+       func_src_after -> label=0 (fixed). Re-balance to 50/50 per language
+       if the counts are off (downsample the majority class, fixed seed for reproducibility).
+    4. Run ONNXVerifier.predict_batch() — model + threshold AS-IS, nothing changed.
+    5. Print accuracy/precision/recall/F1/confusion matrix, BROKEN DOWN by
+       language (c, cpp), plus a combined C+C++ summary.
 """
 
 from __future__ import annotations
@@ -44,13 +44,13 @@ from pathlib import Path
 try:
     from huggingface_hub import hf_hub_download
 except ImportError:
-    print("Thiếu huggingface_hub — cài tạm bằng: pip install huggingface_hub", file=sys.stderr)
+    print("Missing huggingface_hub — install it with: pip install huggingface_hub", file=sys.stderr)
     raise
 
 try:
     import pyarrow.parquet as pq
 except ImportError:
-    print("Thiếu pyarrow (để đọc file .parquet) — cài tạm bằng: pip install pyarrow", file=sys.stderr)
+    print("Missing pyarrow (to read .parquet files) — install it with: pip install pyarrow", file=sys.stderr)
     raise
 
 from vulneracheck.verifier import (
@@ -66,10 +66,10 @@ DATASET_FILES = [
     "data/val-00000-of-00001-3175b48e9b496418.parquet",
 ]
 
-# Đuôi file -> ngôn ngữ, giống hệt _EXTENSION_LANGUAGE_MAP trong
-# vulneracheck/pipeline.py (không import trực tiếp vì đó là hằng số nội bộ
-# "_"-prefixed của module khác — script này độc lập, không phụ thuộc chi
-# tiết nội bộ của pipeline.py).
+# Extension -> language, identical to _EXTENSION_LANGUAGE_MAP in
+# vulneracheck/pipeline.py (not imported directly since it's another
+# module's internal "_"-prefixed constant — this script is standalone, not
+# dependent on pipeline.py's internal details).
 EXTENSION_LANGUAGE_MAP = {
     ".c": "c",
     ".h": "c",
@@ -86,7 +86,7 @@ RANDOM_SEED = 42
 @dataclass
 class EvalExample:
     code: str
-    label: int  # 1 = có lỗi (func_src_before), 0 = đã fix (func_src_after)
+    label: int  # 1 = vulnerable (func_src_before), 0 = fixed (func_src_after)
     language: str
     vul_type: str
     func_name: str
@@ -101,9 +101,9 @@ def _load_split_rows(filename: str) -> list[dict]:
 
 
 def build_eval_examples() -> tuple[list[EvalExample], dict]:
-    """Tải + lọc + dựng tập test nhị phân. Trả về (examples, stats) —
-    stats chứa số liệu trung gian để in báo cáo minh bạch (không giấu dòng
-    nào bị loại)."""
+    """Download + filter + build the binary test set. Returns (examples,
+    stats) — stats holds intermediate numbers for a transparent report
+    (no row that got excluded is hidden)."""
     rows: list[dict] = []
     for filename in DATASET_FILES:
         rows.extend(_load_split_rows(filename))
@@ -120,9 +120,9 @@ def build_eval_examples() -> tuple[list[EvalExample], dict]:
 
         before = row["func_src_before"]
         after = row["func_src_after"]
-        # Bỏ cặp thoái hoá: before == after (không có thay đổi thật, gán 2
-        # nhãn khác nhau cho cùng 1 đoạn code sẽ làm nhiễu tập test) hoặc
-        # rỗng.
+        # Skip degenerate pairs: before == after (no real change, assigning
+        # 2 different labels to the same code would add noise to the test
+        # set) or empty.
         if not before.strip() or not after.strip() or before == after:
             skipped_degenerate += 1
             continue
@@ -150,11 +150,12 @@ def build_eval_examples() -> tuple[list[EvalExample], dict]:
 
 
 def balance_50_50(examples: list[EvalExample]) -> list[EvalExample]:
-    """Cân bằng lại 50/50 THEO TỪNG NGÔN NGỮ bằng downsample lớp đa số (seed
-    cố định để tái lập được). Về mặt cấu trúc, mỗi dòng gốc luôn sinh đúng 1
-    example label=1 + 1 example label=0 CÙNG ngôn ngữ, nên trên lý thuyết đã
-    cân bằng sẵn — hàm này vẫn kiểm tra + tự sửa để không phụ thuộc ngầm vào
-    giả định đó (vd. nếu sau này thêm bước lọc khác làm lệch cân bằng)."""
+    """Re-balances to 50/50 PER LANGUAGE by downsampling the majority class
+    (fixed seed for reproducibility). Structurally, each original row
+    always produces exactly 1 label=1 example + 1 label=0 example of the
+    SAME language, so in theory it's already balanced — this function still
+    checks + self-corrects so it doesn't implicitly depend on that
+    assumption (e.g. if a later filtering step is added that throws off the balance)."""
     rng = random.Random(RANDOM_SEED)
     by_language_label: dict[tuple[str, int], list[EvalExample]] = defaultdict(list)
     for ex in examples:
@@ -168,8 +169,8 @@ def balance_50_50(examples: list[EvalExample]) -> list[EvalExample]:
         target = min(len(pos), len(neg))
         if len(pos) != len(neg):
             print(
-                f"  [cân bằng] {language}: label=1 có {len(pos)}, label=0 có {len(neg)} "
-                f"-> downsample cả 2 về {target} (seed={RANDOM_SEED})."
+                f"  [balancing] {language}: label=1 has {len(pos)}, label=0 has {len(neg)} "
+                f"-> downsampling both to {target} (seed={RANDOM_SEED})."
             )
         balanced.extend(rng.sample(pos, target))
         balanced.extend(rng.sample(neg, target))
@@ -201,31 +202,31 @@ def print_metrics_block(title: str, metrics: dict, uncertain_count: int) -> None
     print(f"  Precision: {metrics['precision']:.4f}")
     print(f"  Recall:    {metrics['recall']:.4f}")
     print(f"  F1:        {metrics['f1']:.4f}")
-    print(f"  Số candidate rơi vào uncertain_zone (status=UNCERTAIN_NEEDS_REVIEW): {uncertain_count}")
+    print(f"  Candidates in the uncertain_zone (status=UNCERTAIN_NEEDS_REVIEW): {uncertain_count}")
 
 
 def main() -> None:
-    print(f"[1/4] Tải dataset {DATASET_REPO_ID} từ HuggingFace Hub (train + val)...")
+    print(f"[1/4] Downloading dataset {DATASET_REPO_ID} from HuggingFace Hub (train + val)...")
     examples, stats = build_eval_examples()
-    print(f"  Tổng số dòng tải về: {stats['total_rows_downloaded']}")
-    print(f"  Bỏ (ngôn ngữ ngoài C/C++, chủ yếu Python): {stats['skipped_language']} dòng")
-    print(f"  Bỏ (cặp before/after thoái hoá — rỗng hoặc giống hệt nhau): {stats['skipped_degenerate']} dòng")
-    print(f"  Số example (before+after) trước khi cân bằng: {stats['total_examples_before_balance']}")
+    print(f"  Total rows downloaded: {stats['total_rows_downloaded']}")
+    print(f"  Skipped (language outside C/C++, mostly Python): {stats['skipped_language']} rows")
+    print(f"  Skipped (degenerate before/after pair — empty or identical): {stats['skipped_degenerate']} rows")
+    print(f"  Number of examples (before+after) before balancing: {stats['total_examples_before_balance']}")
 
-    print("\n[2/4] Cân bằng lại 50/50 theo từng ngôn ngữ...")
+    print("\n[2/4] Re-balancing to 50/50 per language...")
     examples = balance_50_50(examples)
     for language in sorted({ex.language for ex in examples}):
         n_pos = sum(1 for ex in examples if ex.language == language and ex.label == 1)
         n_neg = sum(1 for ex in examples if ex.language == language and ex.label == 0)
-        print(f"  {language}: {n_pos} label=1 / {n_neg} label=0 (tổng {n_pos + n_neg})")
+        print(f"  {language}: {n_pos} label=1 / {n_neg} label=0 (total {n_pos + n_neg})")
 
     if not examples:
-        print("Không còn example nào sau khi lọc/cân bằng — dừng, không có gì để đánh giá.", file=sys.stderr)
+        print("No examples left after filtering/balancing — stopping, nothing to evaluate.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n[3/4] Nạp ONNXVerifier (model: {DEFAULT_MODEL_PATH}) và chạy inference "
-          f"trên {len(examples)} example (threshold dùng nguyên trạng từ "
-          f"{DEFAULT_THRESHOLD_CONFIG_PATH}, KHÔNG hiệu chỉnh lại)...")
+    print(f"\n[3/4] Loading ONNXVerifier (model: {DEFAULT_MODEL_PATH}) and running inference "
+          f"on {len(examples)} examples (threshold used as-is from "
+          f"{DEFAULT_THRESHOLD_CONFIG_PATH}, NOT re-calibrated)...")
     verifier = ONNXVerifier(
         model_path=DEFAULT_MODEL_PATH,
         tokenizer_path=DEFAULT_TOKENIZER_PATH,
@@ -234,10 +235,10 @@ def main() -> None:
     items = [(ex.code, ex.language) for ex in examples]
     results = verifier.predict_batch(items)
 
-    print("\n[4/4] Kết quả:")
+    print("\n[4/4] Results:")
     by_language: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
     for ex, result in zip(examples, results):
-        assert result.ml_verified, f"Ngôn ngữ '{ex.language}' phải nằm trong SUPPORTED_ML_LANGUAGES (đã lọc từ bước 1)."
+        assert result.ml_verified, f"Language '{ex.language}' must be in SUPPORTED_ML_LANGUAGES (already filtered in step 1)."
         by_language[ex.language].append((ex.label, result.label, result.status))
 
     all_labels: list[int] = []
@@ -248,7 +249,7 @@ def main() -> None:
         preds = [p for _y, p, _s in pairs]
         uncertain_count = sum(1 for _y, _p, s in pairs if s == "UNCERTAIN_NEEDS_REVIEW")
         metrics = compute_metrics(labels, preds)
-        print_metrics_block(f"Ngôn ngữ: {language}", metrics, uncertain_count)
+        print_metrics_block(f"Language: {language}", metrics, uncertain_count)
         all_labels.extend(labels)
         all_preds.extend(preds)
 
@@ -256,12 +257,12 @@ def main() -> None:
     total_uncertain = sum(
         1 for pairs in by_language.values() for _y, _p, s in pairs if s == "UNCERTAIN_NEEDS_REVIEW"
     )
-    print_metrics_block("TỔNG HỢP C+C++", combined_metrics, total_uncertain)
+    print_metrics_block("COMBINED C+C++", combined_metrics, total_uncertain)
 
     print(
-        "\nNguồn: SVEN dataset (HuggingFace bstee615/sven, n=803 cặp before/after, "
-        "kiểm tra thủ công bởi con người) — ĐỘC LẬP với dữ liệu train model này, "
-        "chưa từng dùng ở bước train nào trước đây."
+        "\nSource: SVEN dataset (HuggingFace bstee615/sven, n=803 before/after pairs, "
+        "human-verified) — INDEPENDENT of this model's training data, "
+        "never used at any training step before."
     )
 
 

@@ -1,8 +1,9 @@
 """
-parsers: Module Tree-sitter AST parser engine.
+parsers: Tree-sitter AST parser engine module.
 
-Chịu trách nhiệm parse mã nguồn thành AST và áp dụng các query .scm
-(trong thư mục rules/) để tìm candidate sink cần được verifier xác minh thêm.
+Responsible for parsing source code into an AST and applying the .scm
+queries (in the rules/ directory) to find candidate sinks that need
+further verification by the verifier.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ from tree_sitter import Language, Parser, Query, QueryCursor
 
 RULES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "rules"
 
-#  Khớp CHÍNH XÁC với _EXTENSION_LANGUAGE_MAP trong pipeline.py — .h là "c",
-# .hpp/.hh/.cc/.cxx là "cpp" (quy ước lúc train model, xem pipeline.py).
+# Matches EXACTLY _EXTENSION_LANGUAGE_MAP in pipeline.py — .h is "c",
+# .hpp/.hh/.cc/.cxx are "cpp" (convention used when training the model, see pipeline.py).
 LANGUAGE_RULE_MAP = {
     ".py": "python/python_sinks.scm",
     ".java": "java/java_sinks.scm",
@@ -30,8 +31,8 @@ LANGUAGE_RULE_MAP = {
     ".hh": "cpp/cpp_sinks.scm",
 }
 
-# language_key (segment đầu của giá trị LANGUAGE_RULE_MAP) -> package tree-sitter
-# language binding tương ứng, import lazy khi cần.
+# language_key (first segment of a LANGUAGE_RULE_MAP value) -> corresponding
+# tree-sitter language binding package, imported lazily when needed.
 _LANGUAGE_MODULE_MAP = {
     "python": "tree_sitter_python",
     "java": "tree_sitter_java",
@@ -41,9 +42,9 @@ _LANGUAGE_MODULE_MAP = {
 
 _CWE_PATTERN = re.compile(r"CWE-\d+")
 
-# Tên node "function-level" theo từng grammar — dùng để tìm function/method
-# bao quanh 1 sink khi trích snippet (function_definition: C/C++/Python;
-# method_declaration/constructor_declaration: Java).
+# "Function-level" node names per grammar — used to find the enclosing
+# function/method for a sink when extracting a snippet (function_definition:
+# C/C++/Python; method_declaration/constructor_declaration: Java).
 _FUNCTION_NODE_TYPES = {
     "function_definition",
     "method_declaration",
@@ -62,13 +63,13 @@ class CandidateSink:
 
 
 def _extract_cwe_tags(query: Query, query_text: str) -> list[list[str]]:
-    """Với mỗi pattern trong query (theo đúng thứ tự pattern_index mà
-    QueryCursor.matches() trả về), trích các mã CWE-XXX xuất hiện trong
-    comment `;` ngay phía trên pattern đó trong file .scm gốc.
+    """For each pattern in the query (in the same pattern_index order that
+    QueryCursor.matches() returns), extract the CWE-XXX codes appearing in
+    the `;` comment immediately above that pattern in the original .scm file.
 
-    Best-effort: nếu không tìm được comment nào ngay phía trên, trả về list
-    rỗng cho pattern đó thay vì lỗi — CWE chỉ là metadata bổ sung, không bắt
-    buộc để CandidateSink hợp lệ.
+    Best-effort: if no comment is found immediately above, returns an empty
+    list for that pattern instead of erroring — CWE is just supplementary
+    metadata, not required for a CandidateSink to be valid.
     """
     source_bytes = query_text.encode("utf-8")
     tags: list[list[str]] = []
@@ -90,11 +91,12 @@ def _extract_cwe_tags(query: Query, query_text: str) -> list[list[str]]:
 
 
 def _find_enclosing_function_text(node, source_bytes: bytes) -> str | None:
-    """Duyệt lên các node cha của `node` (thường là node @sink.name) tới khi
-    gặp function/method definition (xem _FUNCTION_NODE_TYPES) và trả về toàn
-    bộ text của node đó. Trả về None nếu không tìm thấy (sink ở top-level,
-    lambda, hoặc grammar không có node function-level phù hợp) — gọi nơi
-    dùng phải tự fallback, hàm này không tự fallback về 1 dòng.
+    """Walk up the parent nodes of `node` (usually the @sink.name node)
+    until hitting a function/method definition (see _FUNCTION_NODE_TYPES)
+    and return the full text of that node. Returns None if not found (sink
+    is top-level, a complex lambda, or the grammar has no suitable
+    function-level node) — the caller must handle its own fallback, this
+    function does not fall back to a single line itself.
     """
     current = node.parent
     while current is not None:
@@ -108,11 +110,12 @@ def _find_enclosing_function_text(node, source_bytes: bytes) -> str | None:
 
 class TreeSitterEngine:
     """
-    Wrapper quanh thư viện `tree-sitter`.
+    Wrapper around the `tree-sitter` library.
 
-    Việc build/nạp grammar cho từng ngôn ngữ được thực hiện lazy, tuỳ theo
-    phần mở rộng file được parse, và cache theo language_key (vd. .c/.h dùng
-    chung 1 Parser/Query "c", .cpp/.cc/.cxx/.hpp/.hh dùng chung "cpp").
+    Building/loading the grammar for each language is done lazily,
+    depending on the extension of the file being parsed, and cached by
+    language_key (e.g. .c/.h share one "c" Parser/Query,
+    .cpp/.cc/.cxx/.hpp/.hh share one "cpp").
     """
 
     def __init__(self, rules_dir: Path = RULES_DIR) -> None:
@@ -122,7 +125,7 @@ class TreeSitterEngine:
     def _load_query(self, extension: str) -> str:
         rule_file = LANGUAGE_RULE_MAP.get(extension)
         if rule_file is None:
-            raise ValueError(f"Không có rule .scm cho phần mở rộng: {extension}")
+            raise ValueError(f"No .scm rule for extension: {extension}")
         query_path = self.rules_dir / rule_file
         return query_path.read_text(encoding="utf-8")
 
@@ -152,23 +155,24 @@ class TreeSitterEngine:
 
     def parse_file(self, file_path: str) -> list[CandidateSink]:
         """
-        Parse một file nguồn và trả về danh sách CandidateSink dựa trên
-        query .scm tương ứng với ngôn ngữ của file.
+        Parse a source file and return a list of CandidateSink based on the
+        .scm query corresponding to the file's language.
 
-        High-recall: MỌI match từ query được forward thành CandidateSink,
-        không lọc gì thêm ở đây — lọc là việc của rule .scm (viết pattern
-        chặt hơn) hoặc của Layer 3 (verifier), không phải của hàm này.
+        High-recall: EVERY match from the query is forwarded as a
+        CandidateSink, with no further filtering here — filtering is the
+        job of the .scm rule (writing a tighter pattern) or of Layer 3
+        (verifier), not of this function.
 
-        snippet ưu tiên lấy TOÀN BỘ function/method bao quanh sink (không
-        chỉ 1 dòng) — verifier (Layer 3) được train/calibrate trên dữ liệu
-        function-level đầy đủ, đưa đúng ngữ cảnh này vào giúp giảm distribution
-        shift so với lúc train. Nếu không tìm được function bao quanh (sink ở
-        top-level, lambda phức tạp...), fallback về đúng 1 dòng chứa sink như
-        trước.
+        The snippet preferentially takes the ENTIRE function/method
+        enclosing the sink (not just one line) — the verifier (Layer 3) is
+        trained/calibrated on full function-level data, so providing this
+        same context reduces distribution shift compared to training. If no
+        enclosing function is found (sink is top-level, a complex lambda,
+        etc.), falls back to exactly the one line containing the sink, as before.
 
-        Ngôn ngữ không có rule tương ứng (ngoài phạm vi hỗ trợ) trả về list
-        rỗng, KHÔNG raise lỗi — file không thuộc phạm vi quét không phải lỗi
-        hệ thống.
+        A language with no matching rule (outside the supported scope)
+        returns an empty list, WITHOUT raising — a file outside the scan
+        scope is not a system error.
         """
         extension = Path(file_path).suffix
         engine = self._load_engine(extension)

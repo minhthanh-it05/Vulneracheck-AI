@@ -1,16 +1,16 @@
 """
-pipeline: Orchestrator điều phối luồng cascade 4 bước của VulneraCheck-AI.
+pipeline: Orchestrator driving the 4-step cascade flow of VulneraCheck-AI.
 
-Thứ tự xử lý (per-file, cho Layer 1+2; Layer 3 chạy 1 lần theo batch trên
-toàn bộ candidate gom được — xem run_pipeline):
-    1. secrets  (Layer 1) — quét 1 file tìm hardcoded secret/API key.
-    2. parsers  (Layer 2) — parse AST bằng Tree-sitter, áp dụng rule .scm theo
-       nguyên tắc high-recall: forward MỌI đoạn code "nghi vấn" (candidate sink)
-       sang bước tiếp theo, chấp nhận false positive cao ở bước này để không bỏ
-       sót true positive.
-    3. verifier (Layer 3) — dùng model GraphCodeBERT (ONNX) phân loại nhị phân
-       từng candidate: an toàn / có lỗi, lọc bớt false positive từ Layer 2.
-    4. reporting — gộp kết quả từ cả 3 layer, xuất báo cáo SARIF 2.1.0.
+Processing order (per-file, for Layer 1+2; Layer 3 runs once as a batch over
+all candidates collected — see run_pipeline):
+    1. secrets  (Layer 1) — scan 1 file for hardcoded secrets/API keys.
+    2. parsers  (Layer 2) — parse the AST with Tree-sitter, apply .scm rules
+       following the high-recall principle: forward EVERY "suspicious" code
+       snippet (candidate sink) to the next step, accepting a high false
+       positive rate at this step to avoid missing true positives.
+    3. verifier (Layer 3) — use the GraphCodeBERT (ONNX) model to binary-classify
+       each candidate: safe / vulnerable, filtering out some of Layer 2's false positives.
+    4. reporting — merge results from all 3 layers, export a SARIF 2.1.0 report.
 """
 
 from __future__ import annotations
@@ -33,16 +33,17 @@ from vulneracheck.reporting import (
 from vulneracheck.secrets import SecretFinding, scan_file
 from vulneracheck.verifier import ONNXVerifier, VerifierResult
 
-# Sink KHÔNG được áp dụng giảm thiểu low-confidence dù CWE trùng với
-# LOW_CONFIDENCE_CWE_CATEGORIES. "delete"/"delete[]" (C++) dùng chung mã
-# CWE-416/CWE-476 với nhóm memory-unsafe (free/realloc/...) trong rule .scm,
-# nhưng KHÔNG bị vấn đề false positive hệ thống tương tự — ngược lại,
-# confidence cải thiện rõ sau khi mở rộng snippet (0.66 -> 0.98). Loại trừ
-# tường minh để tránh bị bắt nhầm chỉ vì trùng mã CWE với nhóm khác.
+# Sinks that do NOT get the low-confidence mitigation applied even though
+# their CWE overlaps with LOW_CONFIDENCE_CWE_CATEGORIES. "delete"/"delete[]"
+# (C++) shares CWE-416/CWE-476 codes with the memory-unsafe group
+# (free/realloc/...) in the .scm rule, but does NOT have the same systematic
+# false positive issue — on the contrary, confidence improved clearly after
+# extending the snippet (0.66 -> 0.98). Explicitly excluded to avoid being
+# caught just because it shares a CWE code with another group.
 _LOW_CONFIDENCE_OVERRIDE_EXCLUDED_SINKS = {"delete"}
 
-# Phần mở rộng file -> ngôn ngữ mà verifier (Layer 3) hỗ trợ.
-# .h luôn được coi là "c" (quy ước lúc train model); .hpp/.hh/.cc/.cxx là "cpp".
+# File extension -> language supported by the verifier (Layer 3).
+# .h is always treated as "c" (convention used when training the model); .hpp/.hh/.cc/.cxx are "cpp".
 _EXTENSION_LANGUAGE_MAP = {
     ".c": "c",
     ".h": "c",
@@ -54,11 +55,11 @@ _EXTENSION_LANGUAGE_MAP = {
     ".java": "java",
 }
 
-# Tên hiển thị cho người dùng của language_key (segment đầu trong giá trị
-# LANGUAGE_RULE_MAP — xem parsers/__init__.py) khi build cảnh báo tổng hợp
-# ml_unsupported. Khác _EXTENSION_LANGUAGE_MAP ở trên: map đó chỉ phục vụ
-# Layer 3 (không có "python" vì Layer 3 không hỗ trợ); map này bao phủ MỌI
-# ngôn ngữ Layer 2 hỗ trợ, kể cả ngôn ngữ ngoài phạm vi Layer 3.
+# Display name for the language_key (first segment of a LANGUAGE_RULE_MAP
+# value) used when building the ml_unsupported summary warning. Different
+# from _EXTENSION_LANGUAGE_MAP above: that map only serves Layer 3 (no
+# "python" since Layer 3 doesn't support it); this map covers EVERY language
+# Layer 2 supports, including languages outside Layer 3's scope.
 _DISPLAY_LANGUAGE_NAMES = {
     "python": "Python",
     "java": "Java",
@@ -66,13 +67,13 @@ _DISPLAY_LANGUAGE_NAMES = {
     "cpp": "C++",
 }
 
-# Thư mục luôn bị bỏ qua khi duyệt cây thư mục (tên chính xác, không phải pattern).
+# Directories always skipped when walking the directory tree (exact names, not patterns).
 _SKIP_DIR_NAMES = {"node_modules", "__pycache__", "venv", ".venv"}
 
-# Bỏ qua file lớn hơn ngưỡng này thay vì đọc hết vào RAM.
+# Skip files larger than this threshold instead of reading them fully into RAM.
 _MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 
-# Số byte đọc thử ở đầu file để đoán file có phải binary hay không (có null byte).
+# Number of bytes read from the start of a file to guess whether it's binary (contains a null byte).
 _BINARY_SNIFF_BYTES = 8192
 
 _verifier_singleton: ONNXVerifier | None = None
@@ -80,8 +81,8 @@ _parser_engine_singleton: TreeSitterEngine | None = None
 
 
 def _get_verifier() -> ONNXVerifier:
-    """Khởi tạo ONNXVerifier một lần duy nhất và tái sử dụng session cho
-    mọi lần gọi run_verifier_layer trong tiến trình."""
+    """Initialize ONNXVerifier exactly once and reuse the session for every
+    run_verifier_layer call within the process."""
     global _verifier_singleton
     if _verifier_singleton is None:
         from vulneracheck.verifier import (
@@ -99,8 +100,8 @@ def _get_verifier() -> ONNXVerifier:
 
 
 def _get_parser_engine() -> TreeSitterEngine:
-    """Khởi tạo TreeSitterEngine một lần duy nhất — Parser/Query của từng
-    ngôn ngữ đã tự cache bên trong TreeSitterEngine (xem parsers/__init__.py)."""
+    """Initialize TreeSitterEngine exactly once — each language's
+    Parser/Query is already cached inside TreeSitterEngine (see parsers/__init__.py)."""
     global _parser_engine_singleton
     if _parser_engine_singleton is None:
         _parser_engine_singleton = TreeSitterEngine()
@@ -109,13 +110,13 @@ def _get_parser_engine() -> TreeSitterEngine:
 
 @dataclass
 class PipelineConfig:
-    """Cấu hình chạy pipeline cho một lần scan.
+    """Configuration for a single pipeline scan run.
 
-    Đúng 1 trong 2 chế độ, không được cả 2 và không được thiếu cả 2 (kiểm
-    tra ở đầu run_pipeline):
-        - target_path: quét toàn bộ 1 file hoặc 1 thư mục (chế độ cũ).
-        - diff_range: chỉ quét file thay đổi giữa 2 ref git, vd.
-          "origin/main..HEAD" (chế độ mới, dùng repo_root làm nơi chạy git).
+    Exactly 1 of 2 modes, never both and never neither (checked at the
+    start of run_pipeline):
+        - target_path: scan a whole file or directory (legacy mode).
+        - diff_range: only scan files changed between 2 git refs, e.g.
+          "origin/main..HEAD" (newer mode, uses repo_root as where git runs).
     """
 
     target_path: Path | None = None
@@ -126,7 +127,7 @@ class PipelineConfig:
 
 @dataclass
 class PipelineResult:
-    """Kết quả tổng hợp sau khi chạy hết cascade 4 bước."""
+    """Aggregate result after running the full 4-step cascade."""
 
     secret_findings: list[SecretFinding] = field(default_factory=list)
     candidate_sinks: list[CandidateSink] = field(default_factory=list)
@@ -137,27 +138,27 @@ class PipelineResult:
 
 def run_secrets_layer(file_path: Path) -> list[SecretFinding]:
     """
-    Layer 1: Quét regex/pattern trên 1 file (gọi thẳng secrets.scan_file có sẵn).
+    Layer 1: Regex/pattern scan on 1 file (calls secrets.scan_file directly).
 
     Input:
-        file_path: đường dẫn 1 file mã nguồn cần scan.
+        file_path: path to 1 source file to scan.
     Output:
-        Danh sách SecretFinding — mọi hardcoded secret/API key phát hiện được.
-        Kết quả layer này đi thẳng vào báo cáo cuối, KHÔNG qua verifier.
+        List of SecretFinding — every hardcoded secret/API key detected.
+        This layer's results go straight into the final report, WITHOUT going through the verifier.
     """
     return scan_file(str(file_path))
 
 
 def run_parsers_layer(file_path: Path) -> list[CandidateSink]:
     """
-    Layer 2: Parse AST bằng Tree-sitter và áp rule .scm theo ngôn ngữ của file.
+    Layer 2: Parse the AST with Tree-sitter and apply the .scm rule matching the file's language.
 
     Input:
-        file_path: đường dẫn 1 file mã nguồn cần scan.
+        file_path: path to 1 source file to scan.
     Output:
-        Danh sách CandidateSink — high-recall, forward TẤT CẢ match tìm được,
-        không lọc thêm gì ở đây (lọc là việc của rule .scm hoặc Layer 3).
-        File thuộc ngôn ngữ ngoài phạm vi hỗ trợ trả về list rỗng.
+        List of CandidateSink — high-recall, forwards ALL matches found,
+        with no further filtering here (filtering is the job of the .scm rule or Layer 3).
+        A file in a language outside the supported scope returns an empty list.
     """
     engine = _get_parser_engine()
     return engine.parse_file(str(file_path))
@@ -165,21 +166,21 @@ def run_parsers_layer(file_path: Path) -> list[CandidateSink]:
 
 def run_verifier_layer(candidates: list[CandidateSink]) -> list[VerifierResult]:
     """
-    Layer 3: Chạy inference GraphCodeBERT (ONNX) trên từng candidate sink.
+    Layer 3: Run GraphCodeBERT (ONNX) inference on each candidate sink.
 
-    Threshold không còn là một tham số chung — mỗi ngôn ngữ (c/cpp/java) có
-    threshold và uncertain-zone riêng, đọc từ weights/threshold_config.json
-    (xem vulneracheck.verifier.ONNXVerifier).
+    The threshold is no longer a single shared parameter — each language
+    (c/cpp/java) has its own threshold and uncertain-zone, read from
+    weights/threshold_config.json (see vulneracheck.verifier.ONNXVerifier).
 
     Input:
-        candidates: danh sách CandidateSink từ Layer 2 (gom từ toàn bộ file
-        đã quét). Ngôn ngữ được suy ra từ phần mở rộng file_path; candidate
-        thuộc ngôn ngữ ngoài SUPPORTED_ML_LANGUAGES vẫn được trả về với
-        status="ML_NOT_SUPPORTED" thay vì bị loại bỏ âm thầm.
+        candidates: list of CandidateSink from Layer 2 (collected from all
+        scanned files). The language is inferred from the file_path
+        extension; a candidate in a language outside SUPPORTED_ML_LANGUAGES
+        is still returned with status="ML_NOT_SUPPORTED" instead of being silently dropped.
     Output:
-        Danh sách VerifierResult theo đúng thứ tự candidates đầu vào — dùng
-        predict_batch (1 lần gọi ONNX session cho cả batch), không loop
-        predict() từng candidate.
+        List of VerifierResult in the same order as the input candidates —
+        uses predict_batch (1 ONNX session call for the whole batch), not a
+        predict() loop per candidate.
     """
     verifier = _get_verifier()
     items = [
@@ -190,10 +191,11 @@ def run_verifier_layer(candidates: list[CandidateSink]) -> list[VerifierResult]:
 
 
 def _display_language_name(file_path: str) -> str:
-    """Tên ngôn ngữ để hiển thị cho người dùng, suy ra từ LANGUAGE_RULE_MAP
-    (Layer 2 — phạm vi rộng hơn Layer 3, có cả "python"). Extension không có
-    rule .scm nào (không nên xảy ra ở đây vì chỉ gọi cho candidate đã qua
-    Layer 2) fallback về chính extension."""
+    """Display language name for the user, inferred from LANGUAGE_RULE_MAP
+    (Layer 2 — broader scope than Layer 3, includes "python" too). An
+    extension with no .scm rule (shouldn't happen here since this is only
+    called for a candidate that already went through Layer 2) falls back to
+    the extension itself."""
     extension = Path(file_path).suffix
     rule_file = LANGUAGE_RULE_MAP.get(extension)
     if rule_file is None:
@@ -205,13 +207,13 @@ def _display_language_name(file_path: str) -> str:
 def build_ml_unsupported_warning(
     verified_candidates: list[tuple[CandidateSink, VerifierResult]]
 ) -> str | None:
-    """Dựng 1 dòng cảnh báo TỔNG HỢP (không lặp lại mỗi finding) khi có
-    candidate với ml_verified=False — báo cho người dùng biết các finding đó
-    chỉ dựa trên Layer 1+2, chưa qua Layer 3 lọc precision nên độ tin cậy
-    thấp hơn hẳn C/C++/Java.
+    """Build a single SUMMARY warning line (not repeated per finding) when
+    there are candidates with ml_verified=False — informs the user that
+    those findings are based only on Layer 1+2, not yet filtered for
+    precision by Layer 3, so confidence is much lower than C/C++/Java.
 
-    Trả về None nếu mọi candidate đều ml_verified=True (không có gì để cảnh
-    báo) — gọi nơi dùng (CLI) chỉ in cảnh báo khi giá trị trả về khác None.
+    Returns None if every candidate is ml_verified=True (nothing to warn
+    about) — the caller (CLI) only prints the warning when the return value is not None.
     """
     unsupported = [
         (candidate, result)
@@ -223,9 +225,9 @@ def build_ml_unsupported_warning(
 
     languages = sorted({_display_language_name(candidate.file_path) for candidate, _ in unsupported})
     return (
-        f"⚠️  {len(unsupported)} candidate từ ngôn ngữ {', '.join(languages)} chưa qua "
-        "xác minh AI (chỉ dựa trên Layer 1+2) — độ tin cậy thấp hơn nhiều so với "
-        "C/C++/Java, cần review thủ công kỹ hơn."
+        f"⚠️  {len(unsupported)} candidate(s) from language(s) {', '.join(languages)} not yet "
+        "AI-verified (Layer 1+2 only) — confidence is much lower than "
+        "C/C++/Java, needs closer manual review."
     )
 
 
@@ -235,42 +237,43 @@ def run_reporting_layer(
     output_path: Path,
 ) -> SarifReport:
     """
-    Gộp kết quả Layer 1 (secrets) và Layer 3 (verified candidates) thành một
-    báo cáo SARIF 2.1.0 duy nhất, ghi ra output_path.
+    Merge Layer 1 (secrets) and Layer 3 (verified candidates) results into a
+    single SARIF 2.1.0 report, written to output_path.
 
     Input:
-        secret_findings: kết quả từ run_secrets_layer (gom từ toàn bộ file).
-        verified_candidates: cặp (CandidateSink, VerifierResult) cùng vị trí
-        — cần cả hai để dựng SARIF location (file/line) lẫn kết quả model,
-        vì VerifierResult một mình không mang theo file_path/line.
-        output_path: đường dẫn file SARIF đầu ra.
+        secret_findings: results from run_secrets_layer (collected from all scanned files).
+        verified_candidates: (CandidateSink, VerifierResult) pairs at the
+        same position — need both to build the SARIF location (file/line)
+        and the model result, since VerifierResult alone doesn't carry file_path/line.
+        output_path: path to the output SARIF file.
     Output:
-        SarifReport đã được ghi ra đĩa tại output_path.
+        SarifReport, already written to disk at output_path.
 
-    Quy tắc xuất finding:
-        - Secret: LUÔN redact giá trị thật qua redact_secret() trước khi đưa
-          vào message — SecretFinding.matched_text chứa secret nguyên văn,
-          không được lộ ra SARIF/PR comment.
-        - Candidate ml_verified=False (ngôn ngữ Layer 3 không hỗ trợ): vẫn
-          xuất finding (Layer 2 đã match sink nguy hiểm), severity="warning",
-          properties nêu rõ chưa qua ML nên độ tin cậy thấp hơn.
-        - Candidate status="UNCERTAIN_NEEDS_REVIEW": xuất finding,
-          severity="warning" — model không đủ tin cậy để tự kết luận.
-        - Candidate label=1 và status="OK": xuất finding, severity="error"
-          — model xác nhận có lỗi.
-        - Candidate label=0 và status="OK": KHÔNG xuất finding — model xác
-          nhận an toàn, đây chính là false positive mà Layer 3 tồn tại để lọc.
+    Finding output rules:
+        - Secret: ALWAYS redact the real value via redact_secret() before
+          putting it in the message — SecretFinding.matched_text contains
+          the raw secret, which must never leak into SARIF/PR comments.
+        - Candidate ml_verified=False (language not supported by Layer 3):
+          still emits a finding (Layer 2 already matched a dangerous sink),
+          severity="warning", with properties noting it hasn't gone through ML so confidence is lower.
+        - Candidate status="UNCERTAIN_NEEDS_REVIEW": emits a finding,
+          severity="warning" — the model isn't confident enough to conclude on its own.
+        - Candidate label=1 and status="OK": emits a finding, severity="error"
+          — the model confirms it's vulnerable.
+        - Candidate label=0 and status="OK": does NOT emit a finding — the
+          model confirms it's safe, which is exactly the false positive that Layer 3 exists to filter out.
 
-    Giảm thiểu false positive hệ thống (xem docs/model_card.md): với mọi
-    finding mà verifier ĐÃ chạy (ml_verified=True — cả UNCERTAIN lẫn
-    label=1/OK), nếu candidate.cwe thuộc LOW_CONFIDENCE_CWE_CATEGORIES
-    (buffer-copy, memory-unsafe, format-string — nhóm đã xác nhận 9/9 sample
-    an toàn bị flag sai), severity bị ép về "warning" bất kể confidence/label
-    thật là gì, kèm properties.low_confidence_category=true + note giải
-    thích. Confidence số thật KHÔNG bị xoá/làm tròn — vẫn giữ nguyên trong
-    properties để đảm bảo minh bạch. "delete" bị loại trừ tường minh dù trùng
-    mã CWE (xem _LOW_CONFIDENCE_OVERRIDE_EXCLUDED_SINKS) vì không bị vấn đề
-    tương tự.
+    Systematic false positive mitigation (see docs/model_card.md): for every
+    finding the verifier DID run (ml_verified=True — both UNCERTAIN and
+    label=1/OK), if candidate.cwe is in LOW_CONFIDENCE_CWE_CATEGORIES
+    (buffer-copy, memory-unsafe, format-string — the group confirmed to have
+    9/9 safe samples flagged incorrectly), severity is forced to "warning"
+    regardless of the actual confidence/label, with
+    properties.low_confidence_category=true plus an explanatory note. The
+    real confidence number is NOT stripped/rounded — it stays as-is in
+    properties for transparency. "delete" is explicitly excluded despite
+    sharing the CWE code (see _LOW_CONFIDENCE_OVERRIDE_EXCLUDED_SINKS)
+    because it does not have the same issue.
     """
     def _apply_low_confidence_override(finding: Finding, candidate: CandidateSink) -> None:
         if candidate.sink_name in _LOW_CONFIDENCE_OVERRIDE_EXCLUDED_SINKS:
@@ -287,7 +290,7 @@ def run_reporting_layer(
         report.add(
             Finding(
                 rule_id=f"secret/{finding.rule_id}",
-                message=f"Hardcoded secret phát hiện được (rule: {finding.rule_id}): {redacted}",
+                message=f"Hardcoded secret detected (rule: {finding.rule_id}): {redacted}",
                 file_path=finding.file_path,
                 start_line=finding.line,
                 severity="error",
@@ -304,9 +307,9 @@ def run_reporting_layer(
                 Finding(
                     rule_id=f"sink/{candidate.sink_name}",
                     message=(
-                        f"Candidate sink '{candidate.sink_name}'{cwe_suffix} phát hiện bởi "
-                        "Layer 2, CHƯA được Layer 3 (ML) xác minh vì ngôn ngữ này không "
-                        "nằm trong phạm vi hỗ trợ của model."
+                        f"Candidate sink '{candidate.sink_name}'{cwe_suffix} detected by "
+                        "Layer 2, NOT YET verified by Layer 3 (ML) because this language is "
+                        "outside the model's supported scope."
                     ),
                     file_path=candidate.file_path,
                     start_line=candidate.line,
@@ -326,9 +329,9 @@ def run_reporting_layer(
             uncertain_finding = Finding(
                 rule_id=f"sink/{candidate.sink_name}",
                 message=(
-                    f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — model không đủ "
-                    f"tin cậy để kết luận (confidence={result.confidence:.3f} nằm trong "
-                    "uncertain zone), cần review thủ công."
+                    f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — the model isn't "
+                    f"confident enough to conclude (confidence={result.confidence:.3f} falls "
+                    "within the uncertain zone), needs manual review."
                 ),
                 file_path=candidate.file_path,
                 start_line=candidate.line,
@@ -348,8 +351,8 @@ def run_reporting_layer(
             vulnerable_finding = Finding(
                 rule_id=f"sink/{candidate.sink_name}",
                 message=(
-                    f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — model xác nhận "
-                    f"CÓ LỖI (confidence={result.confidence:.3f})."
+                    f"Candidate sink '{candidate.sink_name}'{cwe_suffix} — the model confirms "
+                    f"it is VULNERABLE (confidence={result.confidence:.3f})."
                 ),
                 file_path=candidate.file_path,
                 start_line=candidate.line,
@@ -365,8 +368,8 @@ def run_reporting_layer(
             )
             _apply_low_confidence_override(vulnerable_finding, candidate)
             report.add(vulnerable_finding)
-        # label == 0 và status == "OK": model xác nhận an toàn -> không xuất
-        # finding (đây chính là false positive mà Layer 3 tồn tại để lọc).
+        # label == 0 and status == "OK": the model confirms it's safe -> no
+        # finding is emitted (this is exactly the false positive that Layer 3 exists to filter out).
 
     report.write(output_path)
     return report
@@ -382,39 +385,40 @@ def _is_probably_binary(path: Path) -> bool:
 
 
 def _should_scan_file(path: Path) -> bool:
-    """Kiểm tra kích thước + binary. Không kiểm tra symlink-escape ở đây —
-    việc đó chỉ có ý nghĩa khi duyệt cây thư mục (xem _iter_scannable_files),
-    còn 1 file được truyền thẳng làm target là lựa chọn tường minh của người
-    dùng, không phải kết quả duyệt tự động nên không có rủi ro "đi lạc"."""
+    """Checks size + binary status. Does not check for symlink-escape here —
+    that only matters when walking a directory tree (see
+    _iter_scannable_files); a file passed directly as the target is an
+    explicit user choice, not the result of automatic traversal, so there's
+    no "wandering off" risk."""
     try:
         size = path.stat().st_size
     except OSError:
-        print(f"[vulneracheck] Bỏ qua {path} (không đọc được kích thước file).", file=sys.stderr)
+        print(f"[vulneracheck] Skipping {path} (could not read file size).", file=sys.stderr)
         return False
     if size > _MAX_FILE_SIZE_BYTES:
         print(
-            f"[vulneracheck] Bỏ qua {path} (kích thước {size} byte > "
-            f"{_MAX_FILE_SIZE_BYTES} byte, tránh đọc hết vào RAM).",
+            f"[vulneracheck] Skipping {path} (size {size} bytes > "
+            f"{_MAX_FILE_SIZE_BYTES} bytes, avoiding reading it fully into RAM).",
             file=sys.stderr,
         )
         return False
     if _is_probably_binary(path):
-        print(f"[vulneracheck] Bỏ qua {path} (nghi ngờ là file binary).", file=sys.stderr)
+        print(f"[vulneracheck] Skipping {path} (suspected to be a binary file).", file=sys.stderr)
         return False
     return True
 
 
 def _resolve_safe_path(file_path: Path, root_real: Path) -> Path | None:
-    """Trả về real path đã resolve nếu file_path là 1 file thường, nằm trong
-    root_real, và không phải symlink; trả về None (kèm cảnh báo stderr) nếu
-    bị loại. Dùng chung cho cả duyệt thư mục (_iter_scannable_files) và chế
-    độ --diff (get_changed_files) để áp dụng đúng 1 bộ điều kiện an toàn,
-    không viết lại logic ở 2 nơi.
+    """Returns the resolved real path if file_path is a regular file, inside
+    root_real, and not a symlink; returns None (with a stderr warning) if
+    excluded. Shared by both directory traversal (_iter_scannable_files) and
+    --diff mode (get_changed_files) to apply the exact same set of safety
+    conditions, without duplicating the logic in 2 places.
     """
     try:
         if file_path.is_symlink():
             print(
-                f"[vulneracheck] Bỏ qua {file_path} (symlink, không theo để tránh "
+                f"[vulneracheck] Skipping {file_path} (symlink, not followed to avoid "
                 "path traversal).",
                 file=sys.stderr,
             )
@@ -422,7 +426,7 @@ def _resolve_safe_path(file_path: Path, root_real: Path) -> Path | None:
         real_path = file_path.resolve()
         if not real_path.is_relative_to(root_real):
             print(
-                f"[vulneracheck] Bỏ qua {file_path} (resolve ra ngoài thư mục gốc "
+                f"[vulneracheck] Skipping {file_path} (resolves outside the root directory "
                 f"{root_real}).",
                 file=sys.stderr,
             )
@@ -435,14 +439,13 @@ def _resolve_safe_path(file_path: Path, root_real: Path) -> Path | None:
 
 
 def _iter_scannable_files(root: Path):
-    """Duyệt cây thư mục an toàn:
-        - bỏ qua .git/, node_modules/, __pycache__/, venv/.venv/, và mọi
-          thư mục ẩn khác bắt đầu bằng "." (bao gồm cả .git luôn vì nó cũng
-          bắt đầu bằng ".");
-        - KHÔNG theo symlink (followlinks=False khi walk thư mục, và bỏ qua
-          từng file là symlink hoặc resolve ra ngoài root — chặn path
-          traversal qua symlink độc hại trỏ ra ngoài thư mục đang quét);
-        - bỏ qua file quá lớn hoặc nghi ngờ binary (xem _should_scan_file).
+    """Safely walks the directory tree:
+        - skips .git/, node_modules/, __pycache__/, venv/.venv/, and any
+          other hidden directory starting with "." (including .git, since it also starts with ".");
+        - does NOT follow symlinks (followlinks=False when walking the
+          directory, and skips any file that is a symlink or resolves
+          outside root — blocks path traversal via a malicious symlink pointing outside the scanned directory);
+        - skips files that are too large or suspected binary (see _should_scan_file).
     """
     root_real = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -457,20 +460,21 @@ def _iter_scannable_files(root: Path):
 
 
 def get_changed_files(diff_range: str, repo_root: Path) -> list[Path]:
-    """Lấy danh sách file thay đổi giữa 2 ref qua `git diff --name-only
-    <diff_range>`, chạy trong repo_root.
+    """Gets the list of changed files between 2 refs via `git diff --name-only
+    <diff_range>`, run in repo_root.
 
-    Áp dụng ĐÚNG các điều kiện an toàn như duyệt thư mục thường (kích thước,
-    binary, symlink, ngoài root) qua _resolve_safe_path/_should_scan_file —
-    tái sử dụng, không viết lại. File đã bị xoá trong diff (không còn tồn
-    tại ở head) tự động bị loại vì _resolve_safe_path kiểm tra is_file().
+    Applies the EXACT SAME safety conditions as regular directory traversal
+    (size, binary, symlink, outside root) via
+    _resolve_safe_path/_should_scan_file — reused, not rewritten. A file
+    deleted in the diff (no longer present at head) is automatically
+    excluded since _resolve_safe_path checks is_file().
 
-    diff_range: dạng "<base_ref>..<head_ref>", vd. "origin/main..HEAD".
+    diff_range: format "<base_ref>..<head_ref>", e.g. "origin/main..HEAD".
 
     Raises:
-        RuntimeError nếu không tìm thấy lệnh `git`, repo_root không phải git
-        repo, hoặc ref trong diff_range không tồn tại (thông báo rõ nguyên
-        nhân thường gặp, vd. thiếu `git fetch` đủ sâu trong CI).
+        RuntimeError if the `git` command is not found, repo_root is not a
+        git repo, or a ref in diff_range does not exist (with a message
+        explaining common causes, e.g. missing a deep enough `git fetch` in CI).
     """
     try:
         result = subprocess.run(
@@ -481,16 +485,16 @@ def get_changed_files(diff_range: str, repo_root: Path) -> list[Path]:
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
-            "Không tìm thấy lệnh `git` trong PATH — cần cài Git để dùng --diff."
+            "`git` command not found in PATH — Git must be installed to use --diff."
         ) from exc
 
     if result.returncode != 0:
         raise RuntimeError(
-            f"`git diff --name-only {diff_range}` thất bại tại {repo_root} "
-            f"(exit code {result.returncode}). Nguyên nhân thường gặp: "
-            f"{repo_root} không phải git repo, hoặc ref trong '{diff_range}' "
-            "không tồn tại (trong CI, cần `git fetch`/checkout đủ sâu — xem "
-            f"fetch-depth). Chi tiết từ git: {result.stderr.strip()}"
+            f"`git diff --name-only {diff_range}` failed at {repo_root} "
+            f"(exit code {result.returncode}). Common causes: "
+            f"{repo_root} is not a git repo, or a ref in '{diff_range}' "
+            "does not exist (in CI, needs a deep enough `git fetch`/checkout — see "
+            f"fetch-depth). Details from git: {result.stderr.strip()}"
         )
 
     root_real = repo_root.resolve()
@@ -508,34 +512,34 @@ def get_changed_files(diff_range: str, repo_root: Path) -> list[Path]:
 
 def run_pipeline(config: PipelineConfig) -> PipelineResult:
     """
-    Chạy toàn bộ cascade: secrets -> parsers -> verifier -> reporting.
+    Runs the full cascade: secrets -> parsers -> verifier -> reporting.
 
     Input:
-        config: PipelineConfig — đúng 1 trong 2 chế độ:
-            - target_path: quét 1 file hoặc 1 thư mục (toàn bộ).
-            - diff_range: chỉ quét file thay đổi giữa 2 ref git (vd. cho
-              PR), lấy qua get_changed_files(config.diff_range,
+        config: PipelineConfig — exactly 1 of 2 modes:
+            - target_path: scan 1 file or 1 directory (whole).
+            - diff_range: only scan files changed between 2 git refs (e.g.
+              for a PR), obtained via get_changed_files(config.diff_range,
               config.repo_root).
-        Set cả 2 hoặc không cái nào đều raise ValueError — 2 chế độ độc lập,
-        loại trừ lẫn nhau.
+        Setting both or neither raises ValueError — the 2 scan modes are
+        independent and mutually exclusive.
     Output:
-        PipelineResult chứa kết quả trung gian của từng layer và báo cáo cuối
-        (đã được ghi ra config.output_path).
+        PipelineResult containing each layer's intermediate results and the
+        final report (already written to config.output_path).
 
-    Thứ tự thực thi: Layer 1 (secrets) và Layer 2 (parsers) chạy tuần tự
-    theo TỪNG FILE. Layer 3 (verifier) chạy MỘT LẦN theo batch trên toàn bộ
-    CandidateSink gom được từ mọi file (dùng predict_batch, không gọi model
-    riêng cho từng file) — hiệu quả hơn nhiều so với batch nhỏ lẻ mỗi file,
-    và vẫn đúng yêu cầu "Layer 3 chỉ chạy cho CandidateSink, không chạy trên
-    toàn bộ file".
+    Execution order: Layer 1 (secrets) and Layer 2 (parsers) run
+    sequentially PER FILE. Layer 3 (verifier) runs ONCE as a batch over ALL
+    CandidateSink collected from every file (using predict_batch, not
+    calling the model separately per file) — much more efficient than many
+    small per-file batches, while still satisfying the requirement that
+    "Layer 3 only runs on CandidateSink, not on the whole file".
     """
     if config.target_path is not None and config.diff_range is not None:
         raise ValueError(
-            "PipelineConfig chỉ được set 1 trong 2: target_path hoặc diff_range, "
-            "không được cả 2 (2 chế độ scan loại trừ lẫn nhau)."
+            "PipelineConfig can only set 1 of the 2: target_path or diff_range, "
+            "not both (the 2 scan modes are mutually exclusive)."
         )
     if config.target_path is None and config.diff_range is None:
-        raise ValueError("PipelineConfig cần set target_path hoặc diff_range.")
+        raise ValueError("PipelineConfig needs target_path or diff_range to be set.")
 
     if config.diff_range is not None:
         files = get_changed_files(config.diff_range, config.repo_root)

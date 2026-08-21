@@ -1,9 +1,9 @@
 """
-secrets: Module quét hardcoded secrets / API keys trong mã nguồn.
+secrets: Module for scanning hardcoded secrets / API keys in source code.
 
-Sử dụng tập hợp regex pattern để phát hiện các chuỗi trông giống API key,
-access token, private key, connection string, v.v. bị hardcode trực tiếp
-trong source code.
+Uses a set of regex patterns to detect strings that look like hardcoded
+API keys, access tokens, private keys, connection strings, etc. directly
+embedded in source code.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 
 def scan_text(file_path: str, content: str) -> list[SecretFinding]:
-    """Quét nội dung file theo từng dòng, trả về danh sách SecretFinding."""
+    """Scan file content line by line, return a list of SecretFinding."""
     findings: list[SecretFinding] = []
     for line_no, line in enumerate(content.splitlines(), start=1):
         for rule_id, pattern in _SECRET_PATTERNS:

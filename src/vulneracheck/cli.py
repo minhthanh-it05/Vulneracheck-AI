@@ -1,5 +1,5 @@
 """
-cli.py: Entrypoint điều khiển lệnh CLI cho VulneraCheck-AI.
+cli.py: CLI entrypoint for VulneraCheck-AI.
 
 Usage:
     vulneracheck scan --path <target_path>
@@ -23,8 +23,8 @@ from vulneracheck.reporting import SarifReport
 colorama_init(autoreset=True)
 
 PARTIAL_PIPELINE_WARNING = (
-    "Pipeline chưa implement đầy đủ — đây KHÔNG phải kết quả quét bảo mật "
-    "thật, chỉ là placeholder."
+    "Pipeline is not fully implemented yet — this is NOT a real security "
+    "scan result, just a placeholder."
 )
 
 
@@ -41,7 +41,7 @@ def cli() -> None:
     required=False,
     default=None,
     type=click.Path(exists=True, file_okay=True, dir_okay=True, path_type=Path),
-    help="Đường dẫn tới file hoặc thư mục mã nguồn cần scan. Loại trừ với --diff.",
+    help="Path to the file or directory to scan. Mutually exclusive with --diff.",
 )
 @click.option(
     "--diff",
@@ -50,9 +50,9 @@ def cli() -> None:
     default=None,
     type=str,
     help=(
-        "Chỉ quét file thay đổi giữa 2 ref git, vd. 'origin/main..HEAD'. "
-        "Chạy `git diff --name-only` tại thư mục làm việc hiện tại (phải là "
-        "git repo). Loại trừ với --path."
+        "Only scan files changed between 2 git refs, e.g. 'origin/main..HEAD'. "
+        "Runs `git diff --name-only` in the current working directory (must "
+        "be a git repo). Mutually exclusive with --path."
     ),
 )
 @click.option(
@@ -61,7 +61,7 @@ def cli() -> None:
     default="report.sarif.json",
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Đường dẫn file báo cáo SARIF 2.1.0 đầu ra.",
+    help="Path to the output SARIF 2.1.0 report file.",
 )
 @click.option(
     "--server",
@@ -70,11 +70,12 @@ def cli() -> None:
     default=None,
     type=str,
     help=(
-        "Gửi scan tới server đang chạy qua `vulneracheck serve` (dạng "
-        "'host:port') thay vì load model trực tiếp trong tiến trình CLI — "
-        "tránh trả lại chi phí load model mỗi lần chạy. Tự động fallback về "
-        "chạy trực tiếp nếu không kết nối được server (chưa chạy/refused/"
-        "timeout). Kết hợp được với --path hoặc --diff."
+        "Send the scan to a server running via `vulneracheck serve` (format "
+        "'host:port') instead of loading the model directly in the CLI "
+        "process — avoids paying the model load cost every run. "
+        "Automatically falls back to running directly if the server can't "
+        "be reached (not running/refused/timeout). Can be combined with "
+        "--path or --diff."
     ),
 )
 def scan(
@@ -83,16 +84,16 @@ def scan(
     output_path: Path,
     server_address: str | None,
 ) -> None:
-    """Quét mã nguồn (--path hoặc --diff) và xuất báo cáo SARIF."""
+    """Scan source code (--path or --diff) and export a SARIF report."""
     if target_path is not None and diff_range is not None:
-        raise click.UsageError("--path và --diff loại trừ nhau, chỉ dùng 1 trong 2.")
+        raise click.UsageError("--path and --diff are mutually exclusive, use only one.")
     if target_path is None and diff_range is None:
-        raise click.UsageError("Cần cung cấp --path hoặc --diff.")
+        raise click.UsageError("--path or --diff is required.")
 
     if diff_range is not None:
-        click.echo(f"{Fore.CYAN}[VulneraCheck] Đang quét diff: {diff_range}{Style.RESET_ALL}")
+        click.echo(f"{Fore.CYAN}[VulneraCheck] Scanning diff: {diff_range}{Style.RESET_ALL}")
     else:
-        click.echo(f"{Fore.CYAN}[VulneraCheck] Đang quét: {target_path}{Style.RESET_ALL}")
+        click.echo(f"{Fore.CYAN}[VulneraCheck] Scanning: {target_path}{Style.RESET_ALL}")
 
     if server_address is not None:
         from vulneracheck.server import ServerConnectionError, scan_via_server
@@ -106,17 +107,18 @@ def scan(
             )
         except ServerConnectionError as exc:
             click.echo(
-                f"{Fore.YELLOW}[VulneraCheck] Không kết nối được server '{server_address}' "
-                f"({exc}) — fallback về chạy trực tiếp trong tiến trình CLI.{Style.RESET_ALL}",
+                f"{Fore.YELLOW}[VulneraCheck] Could not connect to server '{server_address}' "
+                f"({exc}) — falling back to running directly in the CLI process.{Style.RESET_ALL}",
                 err=True,
             )
         else:
             if response.get("error") is not None:
-                # Server CÓ chạy nhưng pipeline báo lỗi thật (vd. ref git sai)
-                # — KHÔNG fallback: fallback sẽ lặp lại đúng lỗi đó, tốn công
-                # vô ích và có thể che giấu vấn đề thật.
+                # The server IS running but the pipeline reported a real
+                # error (e.g. a bad git ref) — do NOT fall back: falling
+                # back would just repeat the same error, wasting effort and
+                # potentially hiding the real problem.
                 click.echo(
-                    f"{Fore.RED}[VulneraCheck] Server báo lỗi: {response['error']}{Style.RESET_ALL}",
+                    f"{Fore.RED}[VulneraCheck] Server reported an error: {response['error']}{Style.RESET_ALL}",
                     err=True,
                 )
                 sys.exit(2)
@@ -125,9 +127,9 @@ def scan(
                 json.dumps(response["sarif"], indent=2, ensure_ascii=False), encoding="utf-8"
             )
             click.echo(
-                f"{Fore.GREEN}[VulneraCheck] Quét xong (qua server {server_address}): "
-                f"{response['candidate_count']} candidate sink, {response['finding_count']} "
-                f"finding được báo cáo. SARIF ghi tại: {output_path}{Style.RESET_ALL}"
+                f"{Fore.GREEN}[VulneraCheck] Scan complete (via server {server_address}): "
+                f"{response['candidate_count']} candidate sink(s), {response['finding_count']} "
+                f"finding(s) reported. SARIF written to: {output_path}{Style.RESET_ALL}"
             )
             if response.get("ml_unsupported_warning"):
                 click.echo(
@@ -143,25 +145,25 @@ def scan(
     try:
         result = run_pipeline(config)
     except NotImplementedError:
-        # Safety net: phòng trường hợp còn sót layer nào chưa nối hết. Đường
-        # chạy chính (không lỗi) đã dùng pipeline thật ở nhánh else bên dưới.
+        # Safety net: in case some layer wasn't fully wired up yet. The main
+        # (non-error) path already uses the real pipeline in the else branch below.
         click.echo(f"{Fore.YELLOW}[VulneraCheck] {PARTIAL_PIPELINE_WARNING}{Style.RESET_ALL}", err=True)
         report = SarifReport(
             run_properties={"status": "partial", "message": PARTIAL_PIPELINE_WARNING}
         )
         report.write(output_path)
-        click.echo(f"{Fore.GREEN}[VulneraCheck] Báo cáo placeholder đã ghi tại: {output_path}{Style.RESET_ALL}")
+        click.echo(f"{Fore.GREEN}[VulneraCheck] Placeholder report written to: {output_path}{Style.RESET_ALL}")
         sys.exit(1)
     except RuntimeError as exc:
-        # Lỗi từ `git diff` (không phải git repo, ref không tồn tại...) —
-        # báo rõ nguyên nhân, không phải bug hệ thống.
+        # Error from `git diff` (not a git repo, ref doesn't exist...) —
+        # reports the real cause, not a system bug.
         click.echo(f"{Fore.RED}[VulneraCheck] {exc}{Style.RESET_ALL}", err=True)
         sys.exit(2)
 
     finding_count = len(result.report.findings) if result.report is not None else 0
     click.echo(
-        f"{Fore.GREEN}[VulneraCheck] Quét xong: {len(result.candidate_sinks)} candidate sink, "
-        f"{finding_count} finding được báo cáo. SARIF ghi tại: {output_path}{Style.RESET_ALL}"
+        f"{Fore.GREEN}[VulneraCheck] Scan complete: {len(result.candidate_sinks)} candidate sink(s), "
+        f"{finding_count} finding(s) reported. SARIF written to: {output_path}{Style.RESET_ALL}"
     )
     if result.ml_unsupported_warning is not None:
         click.echo(f"{Fore.YELLOW}[VulneraCheck] {result.ml_unsupported_warning}{Style.RESET_ALL}")
@@ -173,24 +175,25 @@ def scan(
     default=8765,
     show_default=True,
     type=int,
-    help="Cổng lắng nghe trên 127.0.0.1 (không có flag đổi bind address — chỉ localhost).",
+    help="Port to listen on, bound to 127.0.0.1 (no flag to change the bind address — localhost only).",
 )
 def serve(port: int) -> None:
-    """Khởi động HTTP server giữ model (Layer 3) sống giữa nhiều lần scan
-    liên tiếp — tránh trả lại chi phí load model mỗi lần `scan` chạy như 1
-    tiến trình mới. Chạy foreground, nhấn Ctrl+C để dừng."""
+    """Start an HTTP server that keeps the model (Layer 3) alive across
+    multiple consecutive scans — avoids paying the model load cost every
+    time `scan` runs as a new process. Runs in the foreground, press
+    Ctrl+C to stop."""
     from vulneracheck.server import DEFAULT_HOST, create_server
 
     httpd = create_server(DEFAULT_HOST, port)
     bound_host, bound_port = httpd.server_address
     click.echo(
-        f"{Fore.CYAN}[VulneraCheck] Server đang chạy tại http://{bound_host}:{bound_port} "
-        f"(POST /scan). Nhấn Ctrl+C để dừng.{Style.RESET_ALL}"
+        f"{Fore.CYAN}[VulneraCheck] Server running at http://{bound_host}:{bound_port} "
+        f"(POST /scan). Press Ctrl+C to stop.{Style.RESET_ALL}"
     )
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        click.echo(f"{Fore.CYAN}[VulneraCheck] Đang dừng server...{Style.RESET_ALL}")
+        click.echo(f"{Fore.CYAN}[VulneraCheck] Stopping server...{Style.RESET_ALL}")
     finally:
         httpd.server_close()
 

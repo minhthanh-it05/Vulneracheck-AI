@@ -1,9 +1,11 @@
 """
-verifier: Module AI inference sử dụng ONNX Runtime để xác minh (verify) các
-candidate finding do rule engine (parsers/) phát hiện, nhằm giảm false positive.
+verifier: AI inference module using ONNX Runtime to verify candidate
+findings detected by the rule engine (parsers/), in order to reduce false
+positives.
 
-Model (GraphCodeBERT, fine-tuned) chỉ hỗ trợ 3 ngôn ngữ: C, C++, Java —
-xem SUPPORTED_ML_LANGUAGES. Ngôn ngữ khác không được đưa qua model.
+The model (GraphCodeBERT, fine-tuned) only supports 3 languages: C, C++,
+Java — see SUPPORTED_ML_LANGUAGES. Other languages are not passed through
+the model.
 """
 
 from __future__ import annotations

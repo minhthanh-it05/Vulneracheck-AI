@@ -1,10 +1,11 @@
 """
-Unit tests cho vulneracheck.verifier (Layer 3: GraphCodeBERT ONNX classifier).
+Unit tests for vulneracheck.verifier (Layer 3: GraphCodeBERT ONNX classifier).
 
-Fixture: dùng file mẫu trong samples/vulnerable và samples/safe.
+Fixtures: use sample files in samples/vulnerable and samples/safe.
 
-Các test gọi model thật bị skip tự động nếu weights/ chưa có model.onnx
-(vd. trong CI chưa tải weights) — xem `requires_model`.
+Tests that call the real model are automatically skipped if weights/
+doesn't have model.onnx yet (e.g. in CI before weights are downloaded) —
+see `requires_model`.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ VULNERABLE_PY = SAMPLES_ROOT / "vulnerable" / "python" / "command_injection.py"
 
 requires_model = pytest.mark.skipif(
     not DEFAULT_MODEL_PATH.exists(),
-    reason=f"Model ONNX chưa có tại {DEFAULT_MODEL_PATH} — bỏ qua test gọi model thật.",
+    reason=f"ONNX model not found at {DEFAULT_MODEL_PATH} — skipping tests that call the real model.",
 )
 
 
@@ -51,7 +52,7 @@ def test_supported_ml_languages() -> None:
     assert SUPPORTED_ML_LANGUAGES == ["c", "cpp", "java"]
 
 
-# --- Nhánh ngôn ngữ KHÔNG được hỗ trợ: không raise, trả về ml_verified=False ---
+# --- Unsupported language branch: does not raise, returns ml_verified=False ---
 
 
 def test_predict_unsupported_language_does_not_call_model(verifier: ONNXVerifier) -> None:
@@ -72,7 +73,7 @@ def test_predict_batch_unsupported_language(verifier: ONNXVerifier) -> None:
     assert all(r.ml_verified is False and r.status == "ML_NOT_SUPPORTED" for r in results)
 
 
-# --- Nhánh ngôn ngữ được hỗ trợ: gọi model thật trên sample từ samples/ ---
+# --- Supported language branch: calls the real model on a sample from samples/ ---
 
 
 @requires_model

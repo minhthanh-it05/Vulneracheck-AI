@@ -1,6 +1,6 @@
-# Kiến trúc VulneraCheck-AI
+# VulneraCheck-AI Architecture
 
-## Tổng quan
+## Overview
 
 ## Layer 1 — Secrets Scanner (regex/pattern matching)
 
@@ -10,4 +10,4 @@
 
 ## Reporting (SARIF 2.1.0 / PR comment)
 
-## Luồng dữ liệu end-to-end
+## End-to-end data flow

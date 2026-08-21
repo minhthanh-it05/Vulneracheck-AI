@@ -1,7 +1,7 @@
 """
-Unit tests cho vulneracheck.parsers (Layer 2: Tree-sitter AST parser, high-recall).
+Unit tests for vulneracheck.parsers (Layer 2: Tree-sitter AST parser, high-recall).
 
-Fixture: dùng file mẫu trong samples/vulnerable và samples/safe.
+Fixtures: use sample files in samples/vulnerable and samples/safe.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def test_load_sample(sample_path: Path) -> None:
     [".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".java", ".py"],
 )
 def test_rule_wiring_loads_query(engine: TreeSitterEngine, extension: str) -> None:
-    """Rule .scm cho mọi ngôn ngữ đã được wiring đúng trong LANGUAGE_RULE_MAP."""
+    """The .scm rule for every language is correctly wired in LANGUAGE_RULE_MAP."""
     query_text = engine._load_query(extension)
     assert len(query_text) > 0
     assert "@sink.name" in query_text
@@ -110,7 +110,7 @@ def test_parse_file_extracts_cwe_tags_for_known_pattern(engine: TreeSitterEngine
 def test_parse_file_unsupported_extension_returns_empty_list(
     engine: TreeSitterEngine, tmp_path: Path
 ) -> None:
-    # Ngoài phạm vi hỗ trợ (vd. .txt) -> list rỗng, KHÔNG raise lỗi.
+    # Outside the supported scope (e.g. .txt) -> empty list, does NOT raise.
     unsupported = tmp_path / "notes.txt"
     unsupported.write_text("just some plain text, not source code", encoding="utf-8")
     assert engine.parse_file(str(unsupported)) == []
@@ -130,9 +130,10 @@ def test_parse_file_unsupported_extension_returns_empty_list(
 def test_parse_file_snippet_is_full_enclosing_function(
     engine: TreeSitterEngine, sample: Path, sink_name: str, expected_signature: str
 ) -> None:
-    # snippet phải là TOÀN BỘ function bao quanh sink (nhiều dòng, chứa chữ
-    # ký hàm), không chỉ 1 dòng chứa sink — giảm distribution shift so với
-    # dữ liệu function-level lúc train verifier.
+    # The snippet must be the WHOLE function enclosing the sink (multiple
+    # lines, containing the function signature), not just the 1 line with
+    # the sink — reduces distribution shift relative to the function-level
+    # data used to train the verifier.
     candidates = engine.parse_file(str(sample))
     match = next(c for c in candidates if c.sink_name == sink_name)
     assert expected_signature in match.snippet
@@ -140,9 +141,9 @@ def test_parse_file_snippet_is_full_enclosing_function(
 
 
 def test_parse_file_detects_namespace_qualified_calls(engine: TreeSitterEngine) -> None:
-    # cpp_sinks.scm phải bắt được cả dạng gọi qualified (std::strcpy,
-    # std::sprintf, std::printf), không chỉ dạng gọi trực tiếp — code C++
-    # hiện đại rất hay gọi tường minh qua std::.
+    # cpp_sinks.scm must catch the qualified call form too (std::strcpy,
+    # std::sprintf, std::printf), not just the direct call form — modern
+    # C++ code very often calls explicitly through std::.
     candidates = engine.parse_file(str(QUALIFIED_CALL_VULNERABLE_CPP))
 
     found_names = {c.sink_name for c in candidates}
@@ -162,12 +163,13 @@ def test_parse_file_detects_namespace_qualified_calls(engine: TreeSitterEngine) 
 def test_parse_file_detects_wrapper_function_names(
     engine: TreeSitterEngine, tmp_path: Path
 ) -> None:
-    # Predicate #match? phải bắt được wrapper function tự định nghĩa bọc
-    # quanh hàm libc gốc (vd. mpack_memcpy trong mpack thật) — trước khi
-    # sửa (^|_)(...)($|_), exact-match "^(...)$" bỏ sót hoàn toàn case này.
-    # Case thật: nơi GỌI wrapper (vd. mpack_memcpy(...)), không phải nơi
-    # định nghĩa wrapper gọi hàm libc gốc bên trong (case đó @sink.name đã
-    # bắt được "memcpy"/"strcpy" từ trước, không phải gap cần sửa).
+    # The #match? predicate must catch self-defined wrapper functions
+    # wrapping the original libc function (e.g. mpack_memcpy in real
+    # mpack) — before the (^|_)(...)($|_) fix, the exact-match "^(...)$"
+    # missed this case entirely. The real case: the CALL SITE of the
+    # wrapper (e.g. mpack_memcpy(...)), not the wrapper's own definition
+    # calling the original libc function inside it (that case was already
+    # caught by @sink.name matching "memcpy"/"strcpy" before, not the gap that needed fixing).
     wrapper_file = tmp_path / "wrapper.c"
     wrapper_file.write_text(
         "void use_buffer(char *dst, const char *src, size_t n) {\n"
@@ -189,8 +191,8 @@ def test_parse_file_detects_wrapper_function_names(
 def test_parse_file_does_not_match_unrelated_function_names(
     engine: TreeSitterEngine, tmp_path: Path
 ) -> None:
-    # Nới rộng match KHÔNG được match nhầm tên hàm hoàn toàn không liên quan
-    # chỉ tình cờ chứa 1 chuỗi con dính liền (không tách bằng underscore).
+    # The broader match must NOT match a totally unrelated function name
+    # that just happens to contain an adjacent substring (not separated by an underscore).
     unrelated_file = tmp_path / "unrelated.c"
     unrelated_file.write_text(
         "void process_data(void) { calculate_total(); }\n"
@@ -209,12 +211,12 @@ def test_parse_file_does_not_match_unrelated_function_names(
 def test_parse_file_detects_camelcase_wrapper_function_names(
     engine: TreeSitterEngine, tmp_path: Path
 ) -> None:
-    # Predicate #match? phải bắt được wrapper function đặt tên kiểu
-    # camelCase/PascalCase (không dùng underscore) bên cạnh snake_case đã
-    # có từ trước — xem docs/model_card.md mục "Mở rộng bắt wrapper dạng
-    # camelCase/PascalCase". "safeStrCpy" cố ý viết hoa CẢ 2 "hump" (Str +
-    # Cpy) để xác nhận nhánh camelCase so khớp tên sink không phân biệt
-    # hoa/thường, không chỉ riêng dạng "Strcpy" hoa mỗi chữ đầu.
+    # The #match? predicate must catch a wrapper function named in
+    # camelCase/PascalCase (no underscores) alongside the existing
+    # snake_case support — see docs/model_card.md, section "Extending
+    # wrapper matching to camelCase/PascalCase". "safeStrCpy" deliberately
+    # capitalizes BOTH "humps" (Str + Cpy) to confirm the camelCase branch
+    # matches the sink name case-insensitively, not just the "Strcpy" form with only the first letter capitalized.
     wrapper_file = tmp_path / "wrapper_camelcase.c"
     wrapper_file.write_text(
         "void use_buffer(char *dst, const char *src, size_t n) {\n"
@@ -234,19 +236,19 @@ def test_parse_file_detects_camelcase_wrapper_function_names(
 
     assert "mpackMemcpy" in found_names
     assert "safeStrCpy" in found_names
-    # PascalCase (chính wrapper bắt đầu bằng chữ hoa, không có tiền tố).
+    # PascalCase (the wrapper itself starts with an uppercase letter, no prefix).
     assert "MallocWrapper" in found_names
 
 
 def test_parse_file_does_not_match_unrelated_camelcase_names(
     engine: TreeSitterEngine, tmp_path: Path
 ) -> None:
-    # Nhánh camelCase mới KHÔNG được match nhầm: (1) tên toàn chữ thường
-    # tình cờ chứa chuỗi con dính liền, không có điểm chuyển hoa nào để
-    # nhánh camelCase bắt (somestrcpycall); (2) tên chứa đúng các chữ cái
-    # nhưng KHÔNG liền mạch thành từ sink gốc (myStructCpy: "Struct" != "Str"
-    # nối "cpy"); (3) 2 chữ hoa liền kề kiểu viết tắt, không phải ranh giới
-    # từ hợp lệ (XStrcpy).
+    # The new camelCase branch must NOT falsely match: (1) an all-lowercase
+    # name that happens to contain an adjacent substring, with no
+    # case-transition point for the camelCase branch to catch
+    # (somestrcpycall); (2) a name that contains the right letters but NOT
+    # contiguously as the original sink word (myStructCpy: "Struct" != "Str"
+    # + "cpy"); (3) 2 adjacent uppercase letters like an acronym, not a valid word boundary (XStrcpy).
     unrelated_file = tmp_path / "unrelated_camelcase.c"
     unrelated_file.write_text(
         "void run(void) {\n"
@@ -263,12 +265,14 @@ def test_parse_file_does_not_match_unrelated_camelcase_names(
     assert found_names == set()
 
 
-# --- Test hồi quy: bản vá camelCase/PascalCase (2026-08-19) không được làm
-# GIẢM số candidate quét được trên samples/ so với trước khi vá. Dựng lại
-# rule "trước khi vá" (chỉ có nhánh snake_case, KHÔNG có nhánh camelCase) tại
-# chỗ trong 1 rules_dir tạm, không phụ thuộc `git show HEAD:...` — tránh test
-# trở nên vô nghĩa sau khi thay đổi này được commit (HEAD lúc đó đã là bản
-# MỚI). Token list giữ nguyên giống rules/{c,cpp}/*_sinks.scm hiện tại.
+# --- Regression test: the camelCase/PascalCase fix (2026-08-19) must not
+# DECREASE the number of candidates scanned on samples/ compared to before
+# the fix. Rebuilds the "before the fix" rule (only the snake_case branch,
+# NO camelCase branch) on the fly in a temp rules_dir, without depending on
+# `git show HEAD:...` — avoids this test becoming meaningless once this
+# change is committed (at that point HEAD would already be the NEW
+# version). The token list is kept identical to the current
+# rules/{c,cpp}/*_sinks.scm.
 
 _OLD_BUFFER_TOKENS = "strcpy|strcat|sprintf|vsprintf|gets|scanf|stpcpy|wcscpy|wcscat"
 _OLD_MEMORY_TOKENS = "memcpy|memmove|memset|alloca|strncpy|strncat|realloc|free"
@@ -284,9 +288,10 @@ _C_CPP_EXTENSIONS = {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh"}
 
 
 def _snake_case_only_pattern(tokens: str) -> str:
-    # Predicate #match? y hệt bản NGAY TRƯỚC bản vá camelCase/PascalCase
-    # hiện tại (chỉ bắt snake_case — xem docs/model_card.md mục vá
-    # 2026-08-18, trước mục "Mở rộng bắt wrapper dạng camelCase/PascalCase").
+    # The #match? predicate identical to the version RIGHT BEFORE the
+    # current camelCase/PascalCase fix (snake_case only — see
+    # docs/model_card.md, the 2026-08-18 fix section, before the "Extending
+    # wrapper matching to camelCase/PascalCase" section).
     return f"(^|_)({tokens})($|_)"
 
 
@@ -346,15 +351,16 @@ def _c_cpp_sample_files() -> list[Path]:
 def test_camelcase_extension_never_reduces_candidate_count_on_existing_samples(
     tmp_path: Path,
 ) -> None:
-    # Bản vá camelCase/PascalCase CHỈ thêm 1 nhánh #match? mới (nối bằng
-    # "|"), không đổi/xoá nhánh snake_case cũ -> với BẤT KỲ sample C/C++ nào
-    # đã quét được trước đây, tổng số candidate sau khi vá phải >= trước khi
-    # vá (không được ít hơn). Không kỳ vọng tăng: samples/ hiện có không
-    # chứa wrapper đặt tên camelCase nào (case đó đã được test riêng bằng
-    # file dựng tay ở trên) — bằng nhau vẫn là kết quả hợp lệ.
+    # The camelCase/PascalCase fix ONLY adds a new #match? branch (joined by
+    # "|"), it doesn't change/remove the old snake_case branch -> for ANY
+    # C/C++ sample already scanned before, the total candidate count after
+    # the fix must be >= before the fix (never fewer). No increase is
+    # expected: the existing samples/ don't contain any camelCase-named
+    # wrapper (that case is already tested separately via hand-built files
+    # above) — an equal count is still a valid outcome.
     old_rules_dir = _write_pre_camelcase_rules(tmp_path / "old_rules")
     old_engine = TreeSitterEngine(rules_dir=old_rules_dir)
-    new_engine = TreeSitterEngine()  # rules/ thật của dự án, đã có camelCase.
+    new_engine = TreeSitterEngine()  # the project's real rules/, already has camelCase.
 
     sample_files = _c_cpp_sample_files()
     assert len(sample_files) > 0
@@ -368,8 +374,8 @@ def test_camelcase_extension_never_reduces_candidate_count_on_existing_samples(
 def test_parse_file_falls_back_to_single_line_without_enclosing_function(
     engine: TreeSitterEngine, tmp_path: Path
 ) -> None:
-    # Sink ở top-level (không nằm trong function nào) -> fallback về đúng 1
-    # dòng chứa sink, không lỗi, không trả về cả file.
+    # A sink at the top level (not inside any function) -> falls back to
+    # exactly the 1 line containing the sink, no error, does not return the whole file.
     top_level_file = tmp_path / "top_level.py"
     top_level_file.write_text('import os\nos.system("ls")\n', encoding="utf-8")
 

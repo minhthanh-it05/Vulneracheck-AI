@@ -1,7 +1,7 @@
 """
-inference.py: Triển khai thật của Layer 3 — GraphCodeBERT (RoBERTa-based)
-chạy qua ONNX Runtime để phân loại nhị phân an toàn/có lỗi cho từng candidate
-sink, với threshold và uncertain-zone riêng theo từng ngôn ngữ.
+inference.py: The real implementation of Layer 3 — GraphCodeBERT
+(RoBERTa-based) running through ONNX Runtime to classify each candidate
+sink as safe/vulnerable, with a per-language threshold and uncertain-zone.
 """
 
 from __future__ import annotations
@@ -17,19 +17,20 @@ from vulneracheck.verifier.types import VerifierResult
 
 MAX_SEQUENCE_LENGTH = 512
 
-# Batch quá lớn trong 1 lần session.run() bị chậm SIÊU tuyến tính trên CPU:
-# padding là dynamic THEO ITEM DÀI NHẤT TRONG BATCH, nên batch càng lớn càng
-# dễ "dính" phải ít nhất 1 snippet dài (candidate sink giờ mang cả function
-# bao quanh, có thể dài hàng chục nghìn ký tự trước khi truncate) và kéo
-# TOÀN BỘ batch bị pad theo độ dài đó. Đã đo thực nghiệm trên repo thật
-# (moonlight-common-c, 229 candidate): N=10 ~5.4s, N=30 ~13.5s, N=60 ~26.6s
-# (~0.45s/candidate, tuyến tính) nhưng N=200+ không hoàn thành sau nhiều phút.
-# Chunk cố định theo MAX_BATCH_SIZE để chặn tensor phồng to bất thường,
-# đổi lại nhiều lần gọi session.run() hơn (vẫn là batch thật mỗi lần, không
-# phải loop predict() từng candidate).
+# A batch that's too large in a single session.run() call becomes SUPER
+# linear-slow on CPU: padding is dynamic BASED ON THE LONGEST ITEM IN THE
+# BATCH, so the larger the batch, the more likely it "catches" at least one
+# long snippet (a candidate sink now carries its whole enclosing function,
+# which can be tens of thousands of characters before truncation) and drags
+# the ENTIRE batch to be padded to that length. Measured empirically on a
+# real repo (moonlight-common-c, 229 candidates): N=10 ~5.4s, N=30 ~13.5s,
+# N=60 ~26.6s (~0.45s/candidate, linear) but N=200+ did not complete after
+# several minutes. Chunk with a fixed MAX_BATCH_SIZE to cap abnormal tensor
+# growth, at the cost of more session.run() calls (each is still a real
+# batch, not a predict() loop per candidate).
 MAX_BATCH_SIZE = 32
 
-# Bí danh ngôn ngữ thường gặp -> tên chuẩn dùng trong threshold_config.json
+# Common language aliases -> canonical name used in threshold_config.json
 _LANGUAGE_ALIASES = {
     "c++": "cpp",
     "cxx": "cpp",
@@ -49,8 +50,8 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
 
 
 class ONNXVerifier:
-    """Nạp model ONNX + tokenizer + threshold config một lần, tái sử dụng cho
-    mọi lần gọi `predict`/`predict_batch` (session không được tạo lại mỗi lần)."""
+    """Loads the ONNX model + tokenizer + threshold config once, reused for
+    every `predict`/`predict_batch` call (the session is not recreated each time)."""
 
     def __init__(
         self,
@@ -64,8 +65,8 @@ class ONNXVerifier:
 
         if not self.model_path.exists():
             raise FileNotFoundError(
-                f"Không tìm thấy model ONNX tại {self.model_path}. "
-                "Xem weights/README.md để biết cách tải model."
+                f"ONNX model not found at {self.model_path}. "
+                "See weights/README.md for how to download the model."
             )
 
         session_options = ort.SessionOptions()
@@ -106,10 +107,10 @@ class ONNXVerifier:
         )
 
     def predict(self, code: str, language: str) -> VerifierResult:
-        """Xác minh một candidate sink duy nhất.
+        """Verify a single candidate sink.
 
-        Ngôn ngữ ngoài SUPPORTED_ML_LANGUAGES không được đưa qua model —
-        trả về ngay ml_verified=False, không raise lỗi.
+        A language outside SUPPORTED_ML_LANGUAGES is not passed through the
+        model — returns ml_verified=False immediately, without raising.
         """
         from vulneracheck.verifier import SUPPORTED_ML_LANGUAGES
 
@@ -131,13 +132,14 @@ class ONNXVerifier:
     def predict_batch(
         self, items: list[tuple[str, str]], batch_size: int = MAX_BATCH_SIZE
     ) -> list[VerifierResult]:
-        """Xác minh nhiều candidate sink cùng lúc, chia thành các batch con
-        cố định kích thước `batch_size` (mỗi batch con vẫn là 1 lần gọi
-        session.run() thật — không loop predict() từng candidate). Xem
-        MAX_BATCH_SIZE để biết lý do cần chunk thay vì gộp tất cả vào 1 batch.
+        """Verify multiple candidate sinks at once, split into fixed-size
+        sub-batches of `batch_size` (each sub-batch is still one real
+        session.run() call — not a predict() loop per candidate). See
+        MAX_BATCH_SIZE for why chunking is needed instead of merging
+        everything into one giant batch.
 
-        items: danh sách (code, language).
-        Trả về danh sách VerifierResult theo đúng thứ tự items đầu vào.
+        items: list of (code, language).
+        Returns a list of VerifierResult in the same order as the input items.
         """
         from vulneracheck.verifier import SUPPORTED_ML_LANGUAGES
 

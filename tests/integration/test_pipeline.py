@@ -1,9 +1,11 @@
 """
-Integration test cho vulneracheck.pipeline — chạy cascade 4 bước end-to-end
-(secrets -> parsers -> verifier -> reporting) trên toàn bộ thư mục samples/.
+Integration test for vulneracheck.pipeline — runs the 4-step cascade
+end-to-end (secrets -> parsers -> verifier -> reporting) over the whole
+samples/ directory.
 
-Test gọi model ONNX thật bị skip tự động nếu weights/ chưa có model.onnx
-(vd. trong CI chưa tải weights) — xem `requires_model`.
+Tests that call the real ONNX model are automatically skipped if weights/
+doesn't have model.onnx yet (e.g. in CI before weights are downloaded) —
+see `requires_model`.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ SAMPLES_ROOT = Path(__file__).resolve().parent.parent.parent / "samples"
 
 requires_model = pytest.mark.skipif(
     not DEFAULT_MODEL_PATH.exists(),
-    reason=f"Model ONNX chưa có tại {DEFAULT_MODEL_PATH} — bỏ qua test gọi pipeline thật.",
+    reason=f"ONNX model not found at {DEFAULT_MODEL_PATH} — skipping tests that call the real pipeline.",
 )
 
 
@@ -48,14 +50,14 @@ def test_samples_root_exists() -> None:
 def test_run_pipeline_end_to_end_on_samples(pipeline_config: PipelineConfig) -> None:
     result = run_pipeline(pipeline_config)
 
-    # Layer 2 phải tìm được candidate sink từ ít nhất vài file mẫu đã biết.
+    # Layer 2 must find candidate sinks from at least a few known sample files.
     assert len(result.candidate_sinks) > 0
 
-    # Layer 1 phải bắt được secret cố ý hardcode trong samples/vulnerable/python.
+    # Layer 1 must catch the secret deliberately hardcoded in samples/vulnerable/python.
     assert len(result.secret_findings) > 0
     assert any(f.rule_id == "aws-access-key-id" for f in result.secret_findings)
 
-    # Layer 3 phải trả về đúng 1 VerifierResult cho mỗi CandidateSink.
+    # Layer 3 must return exactly 1 VerifierResult per CandidateSink.
     assert len(result.verified_findings) == len(result.candidate_sinks)
     for vr in result.verified_findings:
         assert vr.status in ("ML_NOT_SUPPORTED", "OK", "UNCERTAIN_NEEDS_REVIEW")
@@ -95,10 +97,10 @@ def test_sarif_output_is_valid_and_well_formed(pipeline_config: PipelineConfig) 
 
 @requires_model
 def test_sarif_output_never_contains_raw_secret(pipeline_config: PipelineConfig) -> None:
-    # samples/vulnerable/python/command_injection.py hardcode
-    # API_KEY = "AKIAIOSFODNN7EXAMPLE" một cách cố ý (fixture, không phải leak
-    # thật). Đảm bảo giá trị nguyên văn không lọt vào SARIF output — chỉ được
-    # xuất hiện dạng đã redact.
+    # samples/vulnerable/python/command_injection.py deliberately hardcodes
+    # API_KEY = "AKIAIOSFODNN7EXAMPLE" (a fixture, not a real leak). Make
+    # sure the raw value never leaks into the SARIF output — only the
+    # redacted form should appear.
     run_pipeline(pipeline_config)
 
     sarif_text = pipeline_config.output_path.read_text(encoding="utf-8")

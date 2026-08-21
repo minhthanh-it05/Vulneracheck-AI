@@ -1,27 +1,29 @@
 """
-server.py: HTTP server tối giản (chỉ dùng http.server, thư viện chuẩn) để
-giữ ONNX model (Layer 3) sống giữa nhiều lần scan liên tiếp — tránh phải trả
-lại chi phí load model + tokenizer (~15-20s overhead cố định, xem
-docs/model_card.md) mỗi lần `vulneracheck scan` chạy như 1 tiến trình CLI
-mới. Singleton cache trong pipeline.py (_verifier_singleton) chỉ tránh load
-lại NHIỀU LẦN TRONG CÙNG 1 tiến trình — không giúp được gì khi mỗi lần scan
-là 1 tiến trình mới (dev gọi lặp từ shell, CI chạy nhiều job/PR trong ngày).
-Giữ server sống làm 1 tiến trình dài hạn giải quyết đúng việc đó.
+server.py: A minimal HTTP server (uses only http.server, the standard
+library) to keep the ONNX model (Layer 3) alive across multiple
+consecutive scans — avoiding paying the model + tokenizer load cost
+(~15-20s fixed overhead, see docs/model_card.md) again every time
+`vulneracheck scan` runs as a new CLI process. The singleton cache in
+pipeline.py (_verifier_singleton) only avoids reloading MULTIPLE TIMES
+WITHIN THE SAME process — it doesn't help when every scan is a new process
+(a dev calling it repeatedly from the shell, CI running many jobs/PRs in a
+day). Keeping the server alive as a single long-lived process solves exactly that.
 
-Thiết kế cố ý thu gọn, đúng phạm vi (không mở rộng thêm):
-    - Single-threaded (http.server.HTTPServer, KHÔNG ThreadingHTTPServer) —
-      request xử lý tuần tự, không cần khoá quanh ONNX session.
-    - Bind CỨNG vào 127.0.0.1 — không có flag đổi bind address ở module này.
-    - Không daemonize, không PID file, không double-fork — CLI `serve` chạy
-      foreground tới khi Ctrl+C.
-    - Model được load lazy: KHÔNG load lúc server start, mà lúc request
-      /scan đầu tiên gọi tới run_pipeline() -> run_verifier_layer() ->
-      pipeline._get_verifier() (singleton có sẵn, không cần thêm gì ở đây).
-    - /scan KHÔNG tự ghi file SARIF ra đĩa — dùng thư mục temp tự xoá ngay
-      sau request (run_reporting_layer() trong pipeline.py luôn ghi ra
-      output_path, không có cách tắt việc ghi mà không đổi API pipeline.py)
-      rồi trả JSON (SarifReport.to_dict() + finding/candidate count) qua
-      response; CLI (client) tự ghi file --output cục bộ.
+Deliberately kept minimal, scoped to exactly this problem (no extra scope):
+    - Single-threaded (http.server.HTTPServer, NOT ThreadingHTTPServer) —
+      requests are processed sequentially, no need to lock around the ONNX session.
+    - HARD-bound to 127.0.0.1 — no flag to change the bind address in this module.
+    - No daemonizing, no PID file, no double-fork — the `serve` CLI runs in
+      the foreground until Ctrl+C.
+    - The model is loaded lazily: NOT loaded at server start, but when the
+      first /scan request calls run_pipeline() -> run_verifier_layer() ->
+      pipeline._get_verifier() (the existing singleton, nothing extra needed here).
+    - /scan does NOT write a SARIF file to disk itself — uses a temp
+      directory that's auto-deleted right after the request
+      (run_reporting_layer() in pipeline.py always writes to output_path,
+      there's no way to disable that write without changing pipeline.py's
+      API), then returns JSON (SarifReport.to_dict() + finding/candidate
+      count) in the response; the CLI (client) writes the --output file locally itself.
 """
 
 from __future__ import annotations
@@ -37,25 +39,27 @@ from vulneracheck.pipeline import PipelineConfig, run_pipeline
 
 DEFAULT_HOST = "127.0.0.1"
 
-# Timeout kết nối ngắn cho client (CLI `scan --server`) — server chạy local
-# (127.0.0.1), không có lý do hợp lệ nào để chờ lâu; hết timeout coi như
-# "server không chạy", CLI fallback về chạy trực tiếp (xem scan_via_server).
+# Short connection timeout for the client (CLI `scan --server`) — the
+# server runs locally (127.0.0.1), there's no valid reason to wait long;
+# a timeout is treated as "server not running", and the CLI falls back to
+# running directly (see scan_via_server).
 SERVER_TIMEOUT_SECONDS = 2.0
 
 _SCAN_PATH = "/scan"
 
 
 class ServerConnectionError(Exception):
-    """Không kết nối được server `vulneracheck serve` (chưa chạy, bị từ chối
-    kết nối, hoặc timeout) — CLI phân biệt lỗi này với lỗi pipeline THẬT
-    (server có chạy nhưng trả lỗi, vd. ref git sai) để quyết định có nên
-    fallback về chạy trực tiếp hay không (chỉ fallback ở trường hợp này)."""
+    """Could not connect to the `vulneracheck serve` server (not running,
+    connection refused, or timed out) — the CLI distinguishes this from a
+    REAL pipeline error (the server is running but returns an error, e.g. a
+    bad git ref) to decide whether to fall back to running directly (only
+    falls back in this case)."""
 
 
 class ScanRequestHandler(BaseHTTPRequestHandler):
-    """Xử lý request HTTP cho `vulneracheck serve`. Đúng 1 endpoint hợp lệ:
-    POST /scan — mọi path/method khác trả lỗi rõ ràng thay vì hành vi mặc
-    định khó hiểu của BaseHTTPRequestHandler."""
+    """Handles HTTP requests for `vulneracheck serve`. Exactly 1 valid
+    endpoint: POST /scan — any other path/method returns a clear error
+    instead of BaseHTTPRequestHandler's confusing default behavior."""
 
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -65,15 +69,16 @@ class ScanRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A002 - tên bắt buộc theo BaseHTTPRequestHandler
-        # Im lặng access log mặc định (ghi thẳng ra stderr mỗi request) —
-        # CLI `serve` tự in trạng thái riêng, không cần log HTTP thô đè lên.
+    def log_message(self, format: str, *args) -> None:  # noqa: A002 - name required by BaseHTTPRequestHandler
+        # Silence the default access log (written straight to stderr per
+        # request) — the `serve` CLI prints its own status, no need for raw
+        # HTTP logs on top of it.
         pass
 
-    def do_POST(self) -> None:  # noqa: N802 - tên bắt buộc theo BaseHTTPRequestHandler
+    def do_POST(self) -> None:  # noqa: N802 - name required by BaseHTTPRequestHandler
         if self.path != _SCAN_PATH:
             self._send_json(
-                404, {"error": f"Không có endpoint '{self.path}', chỉ hỗ trợ POST {_SCAN_PATH}."}
+                404, {"error": f"No such endpoint '{self.path}', only POST {_SCAN_PATH} is supported."}
             )
             return
 
@@ -82,7 +87,7 @@ class ScanRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(raw_body) if raw_body else {}
         except json.JSONDecodeError as exc:
-            self._send_json(400, {"error": f"JSON body không hợp lệ: {exc}"})
+            self._send_json(400, {"error": f"Invalid JSON body: {exc}"})
             return
 
         target_path = payload.get("target_path")
@@ -91,11 +96,11 @@ class ScanRequestHandler(BaseHTTPRequestHandler):
 
         if target_path is not None and diff_range is not None:
             self._send_json(
-                400, {"error": "Chỉ được set 1 trong 2: target_path hoặc diff_range, không cả 2."}
+                400, {"error": "Only 1 of the 2 can be set: target_path or diff_range, not both."}
             )
             return
         if target_path is None and diff_range is None:
-            self._send_json(400, {"error": "Cần target_path hoặc diff_range trong JSON body."})
+            self._send_json(400, {"error": "target_path or diff_range is required in the JSON body."})
             return
 
         try:
@@ -107,17 +112,17 @@ class ScanRequestHandler(BaseHTTPRequestHandler):
                     output_path=Path(tmpdir) / "report.sarif.json",
                 )
                 result = run_pipeline(config)
-                # Đọc report.to_dict() TRƯỚC khi thoát khỏi block `with` — file
-                # tạm bị xoá ngay khi tmpdir dọn dẹp, không để lại gì trên đĩa.
+                # Read report.to_dict() BEFORE leaving the `with` block — the
+                # temp file is deleted as soon as tmpdir is cleaned up, nothing is left on disk.
                 report_dict = result.report.to_dict() if result.report is not None else None
         except (ValueError, RuntimeError) as exc:
-            # Lỗi có thể quy về input của request (2 chế độ scan loại trừ
-            # nhau, ref git sai, không phải git repo...) — 400, không phải
-            # lỗi hệ thống của server.
+            # An error attributable to the request's input (the 2 scan modes
+            # are mutually exclusive, a bad git ref, not a git repo...) — 400,
+            # not a server system error.
             self._send_json(400, {"error": str(exc)})
             return
-        except Exception as exc:  # noqa: BLE001 - biên server: lỗi pipeline không lường trước phải thành JSON có cấu trúc, không được làm crash tiến trình serve foreground đang phục vụ các request sau
-            self._send_json(500, {"error": f"Lỗi không lường trước khi chạy pipeline: {exc}"})
+        except Exception as exc:  # noqa: BLE001 - server boundary: an unexpected pipeline error must become a structured JSON response, must not crash the foreground serve process that's serving later requests
+            self._send_json(500, {"error": f"Unexpected error while running the pipeline: {exc}"})
             return
 
         self._send_json(
@@ -133,9 +138,10 @@ class ScanRequestHandler(BaseHTTPRequestHandler):
 
 
 def create_server(host: str = DEFAULT_HOST, port: int = 0) -> HTTPServer:
-    """Tạo (nhưng KHÔNG serve_forever()) 1 HTTPServer single-threaded gắn
-    ScanRequestHandler. port=0 để OS tự cấp cổng trống — dùng trong test để
-    tránh xung đột cổng; CLI `serve` truyền port cụ thể do người dùng chọn.
+    """Creates (but does NOT serve_forever()) a single-threaded HTTPServer
+    bound to ScanRequestHandler. port=0 lets the OS assign a free port —
+    used in tests to avoid port conflicts; the `serve` CLI passes a
+    specific port chosen by the user.
     """
     return HTTPServer((host, port), ScanRequestHandler)
 
@@ -148,23 +154,23 @@ def scan_via_server(
     repo_root: str,
     timeout: float = SERVER_TIMEOUT_SECONDS,
 ) -> dict:
-    """Gửi request POST /scan tới server đang chạy tại server_address
-    (dạng "host:port"). Trả về dict đã parse từ JSON response.
+    """Sends a POST /scan request to the server running at server_address
+    (format "host:port"). Returns the dict parsed from the JSON response.
 
-    QUAN TRỌNG: response trả về có thể chứa key "error" nếu server CÓ chạy
-    nhưng pipeline/handler báo lỗi thật (vd. ref git sai) — đây KHÔNG phải
-    ServerConnectionError, vì server đã trả lời được. Gọi nơi dùng (CLI)
-    phải tự kiểm tra "error" trong dict trả về, KHÔNG được fallback ở
-    trường hợp này (xem docstring ServerConnectionError).
+    IMPORTANT: the returned response may contain an "error" key if the
+    server IS running but the pipeline/handler reports a real error (e.g. a
+    bad git ref) — this is NOT a ServerConnectionError, since the server did
+    respond. The caller (CLI) must check "error" in the returned dict
+    itself, and must NOT fall back in this case (see the ServerConnectionError docstring).
 
     Raises:
-        ServerConnectionError: không kết nối được server (chưa chạy, bị từ
-        chối kết nối, timeout, DNS lookup thất bại...) — CLI nên fallback
-        về chạy trực tiếp khi gặp lỗi này.
+        ServerConnectionError: could not connect to the server (not
+        running, connection refused, timed out, DNS lookup failed...) — the
+        CLI should fall back to running directly when this happens.
     """
     host, _, port_str = server_address.rpartition(":")
     if not host or not port_str:
-        raise ValueError(f"server_address phải dạng 'host:port', nhận: {server_address!r}")
+        raise ValueError(f"server_address must be in 'host:port' format, got: {server_address!r}")
 
     payload = {
         "target_path": target_path,
@@ -179,17 +185,18 @@ def scan_via_server(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL dựng từ server_address do người dùng CLI tự cung cấp (localhost only theo thiết kế), không phải input từ nguồn không tin cậy
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL built from server_address, supplied by the CLI user themselves (localhost only by design), not input from an untrusted source
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        # Server CÓ trả lời (chạy thật, đã bind cổng, đã nhận request) nhưng
-        # handler trả status lỗi (400/500 kèm JSON {"error": ...}) — KHÔNG
-        # phải lỗi kết nối, không được coi là ServerConnectionError.
+        # The server DID respond (running for real, bound to the port,
+        # received the request) but the handler returned an error status
+        # (400/500 with JSON {"error": ...}) — NOT a connection error, must
+        # not be treated as a ServerConnectionError.
         return json.loads(exc.read().decode("utf-8"))
     except OSError as exc:
         # urllib.error.URLError, socket.timeout, ConnectionRefusedError...
-        # đều là OSError — tức KHÔNG kết nối được server (server không chạy,
-        # refused, timeout, DNS lookup fail...).
+        # are all OSError — meaning the server could NOT be reached (not
+        # running, refused, timed out, DNS lookup failed...).
         raise ServerConnectionError(str(exc)) from exc
 
 

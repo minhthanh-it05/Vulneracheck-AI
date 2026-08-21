@@ -1,9 +1,9 @@
 """
-Unit tests cho vulneracheck.pipeline.get_changed_files() (chế độ `--diff`) và
-validation 2-chế-độ-loại-trừ-nhau của PipelineConfig/run_pipeline.
+Unit tests for vulneracheck.pipeline.get_changed_files() (`--diff` mode) and
+PipelineConfig/run_pipeline's mutually-exclusive-2-mode validation.
 
-Dùng git repo TẠM tạo bằng subprocess ngay trong test (không cần repo thật) —
-nhanh, không cần model ONNX.
+Uses a TEMPORARY git repo created via subprocess right in the test (no real
+repo needed) — fast, no ONNX model needed.
 """
 
 from __future__ import annotations
@@ -43,10 +43,10 @@ def _commit(cwd: Path, message: str) -> None:
 
 @pytest.fixture
 def temp_git_repo(tmp_path: Path) -> Path:
-    """Tạo 1 git repo tạm với 2 commit:
-        commit1: thêm file1.c, file3.c (không đổi ở commit2)
-        commit2: sửa file1.c, thêm file2.c
-    Trả về đường dẫn repo.
+    """Creates a temporary git repo with 2 commits:
+        commit1: adds file1.c, file3.c (unchanged in commit2)
+        commit2: modifies file1.c, adds file2.c
+    Returns the repo path.
     """
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -104,7 +104,7 @@ def test_pipeline_config_rejects_both_target_path_and_diff_range(tmp_path: Path)
     config = PipelineConfig(
         target_path=tmp_path, diff_range="HEAD~1..HEAD", output_path=tmp_path / "out.json"
     )
-    with pytest.raises(ValueError, match="loại trừ"):
+    with pytest.raises(ValueError, match="mutually exclusive"):
         run_pipeline(config)
 
 

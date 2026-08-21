@@ -1,3 +1,3 @@
-# Nguồn khai báo dependency duy nhất là pyproject.toml (tránh 2 file lệch nhau).
+# Single source of dependency declaration is pyproject.toml (avoids 2 files drifting apart).
 # `pip install -r requirements.txt` == `pip install -e .`
 -e .

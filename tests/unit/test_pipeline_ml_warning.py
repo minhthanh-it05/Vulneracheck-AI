@@ -1,15 +1,16 @@
 """
-Unit tests cho cảnh báo tổng hợp "candidate chưa qua xác minh AI" — xem
-vulneracheck.pipeline.build_ml_unsupported_warning và
-ML_NOT_SUPPORTED_NOTE trong reporting/__init__.py.
+Unit tests for the summary "candidate not yet AI-verified" warning — see
+vulneracheck.pipeline.build_ml_unsupported_warning and
+ML_NOT_SUPPORTED_NOTE in reporting/__init__.py.
 
-Ngữ cảnh: candidate từ ngôn ngữ ngoài SUPPORTED_ML_LANGUAGES (hiện tại:
-Python — Layer 2 có rule .scm riêng nhưng Layer 3 thì không) đi qua Layer 2
-bình thường nhưng verifier trả ml_verified=False. Không có cảnh báo rõ ràng
-thì người dùng dễ đánh đồng độ tin cậy với finding C/C++/Java đã qua Layer 3.
+Context: a candidate in a language outside SUPPORTED_ML_LANGUAGES
+(currently: Python — Layer 2 has its own .scm rule but Layer 3 does not)
+goes through Layer 2 normally but the verifier returns ml_verified=False.
+Without a clear warning, users could easily conflate its confidence with a
+C/C++/Java finding that went through Layer 3.
 
-Test dùng CandidateSink/VerifierResult dựng tay (không cần model ONNX thật),
-theo đúng convention của test_pipeline_reporting.py.
+Tests use hand-built CandidateSink/VerifierResult (no real ONNX model
+needed), following the same convention as test_pipeline_reporting.py.
 """
 
 from __future__ import annotations
@@ -81,9 +82,9 @@ def test_warning_counts_only_unsupported_candidates_and_lists_unique_languages()
     warning = build_ml_unsupported_warning(verified_candidates)
 
     assert warning is not None
-    # 3 candidate Python không hỗ trợ, KHÔNG tính candidate C đã ml_verified=True.
+    # 3 unsupported Python candidates, NOT counting the C candidate that is already ml_verified=True.
     assert "3 candidate" in warning
-    # Chỉ 1 ngôn ngữ (Python) dù có 3 candidate — không lặp lại tên ngôn ngữ.
+    # Only 1 language (Python) even with 3 candidates — the language name isn't repeated.
     assert warning.count("Python") == 1
 
 

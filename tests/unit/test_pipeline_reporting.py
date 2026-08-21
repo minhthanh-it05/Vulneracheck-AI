@@ -1,10 +1,11 @@
 """
-Unit tests cho vulneracheck.pipeline.run_reporting_layer — đặc biệt là quyết
-định giảm thiểu false positive hệ thống cho nhóm sink buffer/format C/C++
-(xem docs/model_card.md và LOW_CONFIDENCE_CWE_CATEGORIES trong reporting/).
+Unit tests for vulneracheck.pipeline.run_reporting_layer — specifically the
+decision to mitigate the systematic false positive issue for the C/C++
+buffer/format sink group (see docs/model_card.md and
+LOW_CONFIDENCE_CWE_CATEGORIES in reporting/).
 
-Test dùng CandidateSink/VerifierResult dựng tay (không cần model ONNX thật)
-để kiểm tra logic quyết định severity thuần tuý, chạy nhanh.
+Tests use hand-built CandidateSink/VerifierResult (no real ONNX model
+needed) to check the pure severity-decision logic, running fast.
 """
 
 from __future__ import annotations
@@ -34,9 +35,10 @@ def _verified_result(confidence: float, label: int, status: str = "OK") -> Verif
 def test_low_confidence_cwe_category_forces_warning_despite_high_confidence(
     tmp_path: Path,
 ) -> None:
-    # strncpy thuộc nhóm memory-unsafe (CWE-119/416/476) — đã xác nhận FP hệ
-    # thống. Dù verifier trả confidence rất cao (0.97) và label=1, finding
-    # PHẢI ra severity="warning", không phải "error".
+    # strncpy is in the memory-unsafe group (CWE-119/416/476) — confirmed to
+    # have a systematic FP issue. Even though the verifier returns very high
+    # confidence (0.97) and label=1, the finding MUST come out as
+    # severity="warning", not "error".
     candidate = _candidate("strncpy", cwe=["CWE-119", "CWE-416", "CWE-476"])
     result = _verified_result(confidence=0.97, label=1, status="OK")
 
@@ -47,7 +49,7 @@ def test_low_confidence_cwe_category_forces_warning_despite_high_confidence(
     assert finding.severity == "warning"
     assert finding.extra_properties["low_confidence_category"] is True
     assert "note" in finding.extra_properties
-    # Confidence số thật KHÔNG bị xoá/làm tròn.
+    # The real confidence number is NOT stripped/rounded.
     assert finding.confidence == 0.97
     serialized = report.to_dict()
     assert serialized["runs"][0]["results"][0]["properties"]["confidence"] == 0.97
@@ -65,10 +67,10 @@ def test_low_confidence_category_also_applies_to_format_string_group(tmp_path: P
 
 
 def test_delete_sink_not_affected_despite_sharing_cwe_codes(tmp_path: Path) -> None:
-    # delete/delete[] dùng CHUNG mã CWE-416/CWE-476 với nhóm memory-unsafe
-    # trong rule .scm, nhưng KHÔNG bị vấn đề false positive tương tự (ngược
-    # lại, cải thiện tốt: 0.66 -> 0.98). Phải loại trừ tường minh, không được
-    # bị bắt nhầm chỉ vì trùng mã CWE.
+    # delete/delete[] SHARES CWE-416/CWE-476 codes with the memory-unsafe
+    # group in the .scm rule, but does NOT have the same false positive
+    # issue (on the contrary, it improved well: 0.66 -> 0.98). Must be
+    # explicitly excluded, must not be caught just because it shares a CWE code.
     candidate = _candidate("delete", cwe=["CWE-416", "CWE-476"], file_path="app.cpp")
     result = _verified_result(confidence=0.98, label=1, status="OK")
 
@@ -81,8 +83,8 @@ def test_delete_sink_not_affected_despite_sharing_cwe_codes(tmp_path: Path) -> N
 
 
 def test_command_injection_sink_not_affected(tmp_path: Path) -> None:
-    # system/exec (CWE-78, CWE-88) không nằm trong LOW_CONFIDENCE_CWE_CATEGORIES
-    # — verifier cải thiện tốt cho nhóm này, không cần giảm thiểu.
+    # system/exec (CWE-78, CWE-88) is not in LOW_CONFIDENCE_CWE_CATEGORIES —
+    # the verifier performs well on this group, no mitigation needed.
     candidate = _candidate("system", cwe=["CWE-78", "CWE-88"], file_path="app.cpp")
     result = _verified_result(confidence=0.72, label=1, status="OK")
 
