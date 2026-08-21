@@ -61,10 +61,11 @@ tục xử lý các candidate còn lại một cách bình thường.
   curate) và dữ liệu Layer 2 sẽ forward trong thực tế (snippet cắt quanh sink,
   ngữ cảnh cụt hơn, độ dài/style khác) — chưa có cách đo trực tiếp rủi ro này
   cho tới khi chạy trên dữ liệu thật.
-- **Số liệu benchmark chi tiết (accuracy/precision/recall/F1): TBD, xem
-  `docs/model_card.md`** — tài liệu đó hiện chưa có nội dung, chỉ có
-  `threshold_config.json` làm nguồn calibration thật duy nhất trong repo tính
-  đến thời điểm này.
+- **Số liệu benchmark chi tiết (accuracy/precision/recall/F1)** — xem mục
+  "Đánh giá độc lập trên SVEN dataset" trong `docs/model_card.md` (không lặp
+  lại số liệu ở đây để tránh 2 nguồn lệch nhau theo thời gian). Tóm tắt kết
+  luận: precision ~50% trên C/C++ khi đo độc lập — thấp hơn nhiều so với ước
+  tính nội bộ lúc train.
 
 ## Quy trình lấy model từ Google Colab
 
